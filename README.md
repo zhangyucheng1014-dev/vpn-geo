@@ -2,7 +2,7 @@
 
 [![Release](https://img.shields.io/github/v/release/zhangyucheng1014-dev/vpn-geo?display_name=tag)](https://github.com/zhangyucheng1014-dev/vpn-geo/releases) [![License](https://img.shields.io/github/license/zhangyucheng1014-dev/vpn-geo)](LICENSE) [![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 
-中文 | [English](README.en.md)
+**中文** | [英文](README.en.md)
 
 > 给经常换 VPN 节点的人：VPN 断开后，`vpn-geo` 会根据当前网络所在国家，帮你把对应节点排到更靠前的位置。你不用每次都手动找同一个节点。
 

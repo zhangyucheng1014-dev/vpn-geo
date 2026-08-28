@@ -2,7 +2,7 @@
 
 [![Release](https://img.shields.io/github/v/release/zhangyucheng1014-dev/vpn-geo?display_name=tag)](https://github.com/zhangyucheng1014-dev/vpn-geo/releases) [![License](https://img.shields.io/github/license/zhangyucheng1014-dev/vpn-geo)](LICENSE)
 
-English | [中文首页](README.md)
+[中文](README.md) | **英文**
 
 `vpn-geo` is a lightweight NetworkManager user service for VPN users on Linux.
 After the last active VPN disconnects, it waits for the normal route to settle,
