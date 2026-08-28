@@ -1,0 +1,16 @@
+pkgbase = vpn-geo
+	pkgdesc = Move NetworkManager VPN profiles to the preferred country after VPN disconnects
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/zhangyucheng1014-dev/vpn-geo
+	arch = x86_64
+	arch = aarch64
+	arch = armv7h
+	license = MIT
+	makedepends = go
+	depends = networkmanager
+	depends = ca-certificates
+	source = vpn-geo-1.0.0.tar.gz::https://github.com/zhangyucheng1014-dev/vpn-geo/archive/refs/tags/v1.0.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = vpn-geo

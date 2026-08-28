@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            archive_arch: amd64
+          - goarch: arm64
+            archive_arch: arm64
+          - goarch: arm
+            goarm: '7'
+            archive_arch: armv7
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.24.x'
+      - name: Build archive
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: '0'
+          ARCHIVE_ARCH: ${{ matrix.archive_arch }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -eu
+          archive="vpn-geo_${VERSION#v}_linux_${ARCHIVE_ARCH}"
+          mkdir -p "dist/$archive"
+          go build -trimpath -ldflags='-s -w' -o "dist/$archive/vpn-geo" ./cmd/vpn-geo
+          install -m 0644 README.md README.zh-CN.md LICENSE "dist/$archive/"
+          install -m 0644 examples/config.toml "dist/$archive/config.toml.example"
+          install -m 0644 packaging/vpn-geo-user.service "dist/$archive/vpn-geo.service"
+          tar -C dist -czf "dist/$archive.tar.gz" "$archive"
+          sha256sum "dist/$archive.tar.gz" > "dist/$archive.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive_arch }}
+          path: dist/*.tar.gz*
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
