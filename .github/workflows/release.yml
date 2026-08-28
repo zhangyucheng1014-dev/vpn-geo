@@ -39,7 +39,7 @@ jobs:
           archive="vpn-geo_${VERSION#v}_linux_${ARCHIVE_ARCH}"
           mkdir -p "dist/$archive"
           go build -trimpath -ldflags='-s -w' -o "dist/$archive/vpn-geo" ./cmd/vpn-geo
-          install -m 0644 README.md README.zh-CN.md LICENSE "dist/$archive/"
+          install -m 0644 README.md README.en.md README.zh-CN.md LICENSE "dist/$archive/"
           install -m 0644 examples/config.toml "dist/$archive/config.toml.example"
           install -m 0644 packaging/vpn-geo-user.service "dist/$archive/vpn-geo.service"
           tar -C dist -czf "dist/$archive.tar.gz" "$archive"

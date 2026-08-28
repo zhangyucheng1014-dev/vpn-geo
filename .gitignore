@@ -1,4 +1,18 @@
-/vpn-node-priority
+# Go build output
+/vpn-geo
 /dist/
+*.test
+coverage.out
+
+# Release and Arch Linux packages
 /*.tar.gz
 *.pkg.tar.*
+
+# Local configuration and tooling
+.env
+.env.*
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo

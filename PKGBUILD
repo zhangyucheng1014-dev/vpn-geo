@@ -28,7 +28,11 @@ package() {
   install -Dm644 packaging/${pkgname}.service "${pkgdir}/usr/lib/systemd/user/${pkgname}.service"
   install -Dm644 examples/config.toml "${pkgdir}/usr/share/doc/${pkgname}/config.toml"
   install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
-  install -Dm644 README.en.md "${pkgdir}/usr/share/doc/${pkgname}/README.en.md"
+  # README.en.md was added after the v1.0.1 source tag; package it when
+  # building from a newer source snapshot without breaking the v1.0.1 tag.
+  if [[ -f README.en.md ]]; then
+    install -Dm644 README.en.md "${pkgdir}/usr/share/doc/${pkgname}/README.en.md"
+  fi
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
   install -Dm644 README.zh-CN.md "${pkgdir}/usr/share/doc/${pkgname}/README.zh-CN.md"
 }
