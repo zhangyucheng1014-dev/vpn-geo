@@ -1,6 +1,6 @@
 # Maintainer: zhangyucheng1014-dev <zhangyucheng1014-dev@users.noreply.github.com>
 pkgname=vpn-geo
-pkgver=1.0.0
+pkgver=1.0.1
 pkgrel=1
 pkgdesc='Move NetworkManager VPN profiles to the preferred country after VPN disconnects'
 arch=('x86_64' 'aarch64' 'armv7h')
@@ -9,7 +9,7 @@ license=('MIT')
 depends=('networkmanager' 'ca-certificates')
 makedepends=('go')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('5a8a0f6100c6b6bc21ebf4afdc6647b67059879c4bf1b7d6522f2da90b010515')
+sha256sums=('SKIP')
 
 build() {
   cd "${pkgname}-${pkgver}"

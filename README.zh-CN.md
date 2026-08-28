@@ -75,7 +75,7 @@ install -Dm644 vpn-geo.service ~/.config/systemd/user/vpn-geo.service
 
 ```bash
 makepkg -s
-sudo pacman -U vpn-geo-1.0.0-1-x86_64.pkg.tar.zst
+sudo pacman -U vpn-geo-1.0.1-1-x86_64.pkg.tar.zst
 systemctl --user daemon-reload
 systemctl --user enable --now vpn-geo.service
 ```
