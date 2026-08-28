@@ -43,7 +43,10 @@ jobs:
           install -m 0644 examples/config.toml "dist/$archive/config.toml.example"
           install -m 0644 packaging/vpn-geo-user.service "dist/$archive/vpn-geo.service"
           tar -C dist -czf "dist/$archive.tar.gz" "$archive"
-          sha256sum "dist/$archive.tar.gz" > "dist/$archive.tar.gz.sha256"
+          (
+            cd dist
+            sha256sum "$archive.tar.gz" > "$archive.tar.gz.sha256"
+          )
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive_arch }}

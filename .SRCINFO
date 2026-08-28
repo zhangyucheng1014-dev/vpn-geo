@@ -11,6 +11,6 @@ pkgbase = vpn-geo
 	depends = networkmanager
 	depends = ca-certificates
 	source = vpn-geo-1.0.0.tar.gz::https://github.com/zhangyucheng1014-dev/vpn-geo/archive/refs/tags/v1.0.0.tar.gz
-	sha256sums = SKIP
+	sha256sums = 5a8a0f6100c6b6bc21ebf4afdc6647b67059879c4bf1b7d6522f2da90b010515
 
 pkgname = vpn-geo

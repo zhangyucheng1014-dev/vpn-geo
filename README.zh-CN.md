@@ -61,9 +61,9 @@ go build -o vpn-geo ./cmd/vpn-geo
 下载与 `uname -m` 对应的文件，先校验同名 `.sha256` 文件，再安装二进制和 user service：
 
 ```bash
+sha256sum -c vpn-geo_VERSION_linux_amd64.tar.gz.sha256
 tar -xzf vpn-geo_VERSION_linux_amd64.tar.gz
 cd vpn-geo_VERSION_linux_amd64
-sha256sum -c ../vpn-geo_VERSION_linux_amd64.tar.gz.sha256
 install -Dm755 vpn-geo ~/.local/bin/vpn-geo
 install -Dm644 vpn-geo.service ~/.config/systemd/user/vpn-geo.service
 ```
@@ -81,7 +81,7 @@ systemctl --user enable --now vpn-geo.service
 ```
 
 本地构建并立即安装可以使用 `makepkg -si`，相当于构建后安装本地包。未来提交
-AUR 前，需要把 `sha256sums=('SKIP')` 换成对应 tag 源码压缩包的校验值，并执行
+AUR 前，需要更新软件包版本和对应 tag 源码压缩包的校验值，并执行
 `makepkg --printsrcinfo > .SRCINFO` 更新 `.SRCINFO`。
 
 打包提供的 user service 在空闲时采用较低 CPU/IO 优先级，内存上限为 128 MiB、任务数上限为 32，并让 Go 运行时更积极地归还未使用的内存页。这些限制只作用于后台服务，手动执行的 `speed` 命令不受其限制。

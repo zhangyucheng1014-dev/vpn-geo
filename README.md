@@ -66,9 +66,9 @@ page provides archives for Linux `amd64` (x86_64), `arm64` (aarch64), and
 `.sha256` file, then install the binary and user-service unit:
 
 ```bash
+sha256sum -c vpn-geo_VERSION_linux_amd64.tar.gz.sha256
 tar -xzf vpn-geo_VERSION_linux_amd64.tar.gz
 cd vpn-geo_VERSION_linux_amd64
-sha256sum -c ../vpn-geo_VERSION_linux_amd64.tar.gz.sha256
 install -Dm755 vpn-geo ~/.local/bin/vpn-geo
 install -Dm644 vpn-geo.service ~/.config/systemd/user/vpn-geo.service
 ```
@@ -88,8 +88,8 @@ systemctl --user enable --now vpn-geo.service
 
 For a local source build/install in one command, `makepkg -si` is equivalent
 to building followed by the local package install. Before publishing this to
-the AUR, replace `sha256sums=('SKIP')` with the checksum for the tagged source
-archive and regenerate `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO`.
+the AUR, update the package version and its tagged source-archive checksum,
+then regenerate `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO`.
 
 The packaged user service is deliberately lightweight while idle: it runs at
 lower CPU/IO priority, caps memory at 128 MiB, caps tasks at 32, and configures

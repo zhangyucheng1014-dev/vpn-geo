@@ -1,3 +1,4 @@
 /vpn-node-priority
 /dist/
+/*.tar.gz
 *.pkg.tar.*
