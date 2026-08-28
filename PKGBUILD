@@ -9,7 +9,7 @@ license=('MIT')
 depends=('networkmanager' 'ca-certificates')
 makedepends=('go')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('bbaebf916cf82c3c4593fea476bd20fabefe90da00c489051728870c8c9805d6')
 
 build() {
   cd "${pkgname}-${pkgver}"
