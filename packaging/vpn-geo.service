@@ -1,0 +1,23 @@
+[Unit]
+Description=VPN node priority manager
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/vpn-geo daemon
+Restart=on-failure
+RestartSec=5s
+Nice=10
+CPUWeight=20
+IOWeight=20
+MemoryHigh=48M
+MemoryMax=96M
+TasksMax=32
+NoNewPrivileges=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

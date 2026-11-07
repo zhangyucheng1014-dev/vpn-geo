@@ -1,0 +1,13 @@
+/target/
+/dist/
+/vpn-geo
+*.pkg.tar.*
+*.tar.gz
+*.tar.gz.sha256
+.env
+.env.*
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo

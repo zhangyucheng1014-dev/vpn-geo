@@ -1,0 +1,62 @@
+# vpn-geo 2.x example configuration. Legacy 1.x files remain valid.
+settle_delay = "3s"
+quiet_period = "500ms"
+
+[geoip]
+# When omitted, three compatible public services are queried concurrently.
+# One legacy `url` key also works; `urls` takes precedence for extra sources.
+urls = [
+  "https://ipwho.is/",
+  "https://ipapi.co/json/",
+  "https://ip-api.com/json/?fields=status,countryCode,lat,lon,message",
+]
+timeout = "10s"
+
+[benchmark]
+candidate_countries = 3
+samples = 3
+request_timeout = "8s"
+download_bytes = 10485760
+parallel = 2
+
+[[nodes]]
+name = "jp-tokyo-1"
+uuid = "REPLACE-WITH-NETWORKMANAGER-PROFILE-UUID"
+country = "JP"
+latitude = 35.6762
+longitude = 139.6503
+test_url = "https://replace-with-your-test-host.example/test-10MiB.bin"
+
+[[nodes]]
+name = "kr-seoul-1"
+uuid = "REPLACE-WITH-NETWORKMANAGER-PROFILE-UUID-2"
+country = "KR"
+latitude = 37.5665
+longitude = 126.9780
+test_url = "https://replace-with-your-test-host.example/test-10MiB.bin"
+
+# Optional. Without [[mirrors]], `mirror` uses the built-in source catalog.
+# `kind` is either "pacman" or "generic"; only pacman sources can be applied.
+[[mirrors]]
+name = "tsinghua"
+kind = "pacman"
+url = "https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch"
+test_url = "https://mirrors.tuna.tsinghua.edu.cn/archlinux/core/os/x86_64/core.db.tar.gz"
+priority = 100
+enabled = true
+
+[[mirrors]]
+name = "ustc"
+kind = "pacman"
+url = "https://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch"
+test_url = "https://mirrors.ustc.edu.cn/archlinux/core/os/x86_64/core.db.tar.gz"
+priority = 90
+enabled = true
+
+[[mirrors]]
+name = "aliyun"
+kind = "pacman"
+url = "https://mirrors.aliyun.com/archlinux/$repo/os/$arch"
+test_url = "https://mirrors.aliyun.com/archlinux/core/os/x86_64/core.db.tar.gz"
+priority = 80
+enabled = true
