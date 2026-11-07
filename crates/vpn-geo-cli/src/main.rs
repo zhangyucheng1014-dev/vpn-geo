@@ -2,15 +2,16 @@ use std::{path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use log::{error, info};
-use vpn_geo_core::{
-    Config, VERSION,
-    benchmark::{self, SpeedResult},
-    config::MirrorRegion,
-    daemon, geoip, logging, mirror, network,
+use vpn_geo_app::{
+    AppError,
+    ports::NetworkGateway,
+    services::{self, App},
 };
+use vpn_geo_domain::{VERSION, model::SpeedResult};
+use vpn_geo_infra::Ports;
 
 #[derive(Debug, Parser)]
-#[command(name = "vpn-geo", version = VERSION, about = "NetworkManager VPN prioritizer and network diagnostics")]
+#[command(name = "vpn-geo", version = VERSION, about = "Hexagonal NetworkManager VPN prioritizer and diagnostics")]
 struct Cli {
     #[arg(short = 'c', long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
@@ -24,17 +25,11 @@ struct Cli {
 enum Commands {
     Daemon,
     Check(JsonArgs),
-    #[command(about = "Show VPN, system proxy and route state")]
     Status(StatusArgs),
-    #[command(about = "Show GeoIP source catalog")]
     Sources(JsonArgs),
-    #[command(about = "Benchmark nearest configured nodes")]
     Speed(SpeedArgs),
-    #[command(about = "Benchmark current route and optional no-proxy baseline")]
     Route(RouteArgs),
-    #[command(about = "Manage pacman and generic mirror sources")]
     Mirror(MirrorArgs),
-    #[command(about = "Run configuration, D-Bus, GeoIP and source checks")]
     Doctor(DoctorArgs),
 }
 
@@ -54,13 +49,13 @@ struct StatusArgs {
 
 #[derive(Args, Debug)]
 struct SpeedArgs {
-    #[arg(long, help = "promote fastest successfully measured node")]
+    #[arg(long)]
     apply: bool,
     #[arg(long)]
     direct: bool,
     #[arg(long)]
     json: bool,
-    #[arg(value_name = "APPLY", help = "legacy positional form: speed apply")]
+    #[arg(value_name = "APPLY")]
     legacy_apply: Option<String>,
 }
 
@@ -72,7 +67,7 @@ struct RouteArgs {
     direct: bool,
     #[arg(long)]
     json: bool,
-    #[arg(value_name = "COMPARE", help = "legacy positional form: route compare")]
+    #[arg(value_name = "COMPARE")]
     legacy_compare: Option<String>,
 }
 
@@ -124,7 +119,7 @@ struct MirrorSyncArgs {
     per_region: usize,
     #[arg(long)]
     json: bool,
-    #[arg(long, help = "write generated [[mirrors]] entries to a TOML file")]
+    #[arg(long)]
     output: Option<PathBuf>,
 }
 
@@ -134,7 +129,7 @@ struct MirrorBestArgs {
     region: Option<Region>,
     #[arg(long)]
     direct: bool,
-    #[arg(long, short = 'y', help = "apply the fastest source to pacman")]
+    #[arg(long, short = 'y')]
     yes: bool,
     #[arg(long)]
     json: bool,
@@ -158,13 +153,13 @@ enum Region {
 }
 
 impl Region {
-    fn core(self) -> MirrorRegion {
+    fn core(self) -> vpn_geo_domain::model::Region {
         match self {
-            Self::Cn => MirrorRegion::Cn,
-            Self::Hk => MirrorRegion::Hk,
-            Self::Jp => MirrorRegion::Jp,
-            Self::Us => MirrorRegion::Us,
-            Self::Global => MirrorRegion::Global,
+            Self::Cn => vpn_geo_domain::model::Region::Cn,
+            Self::Hk => vpn_geo_domain::model::Region::Hk,
+            Self::Jp => vpn_geo_domain::model::Region::Jp,
+            Self::Us => vpn_geo_domain::model::Region::Us,
+            Self::Global => vpn_geo_domain::model::Region::Global,
         }
     }
 }
@@ -172,101 +167,183 @@ impl Region {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    logging::init(cli.verbose);
-    let path = cli.config.unwrap_or_else(Config::default_path);
-    let config = match Config::load(&path) {
-        Ok(config) => Arc::new(config),
-        Err(error) => return exit(error),
+    init_logging(cli.verbose);
+    let path = cli.config.unwrap_or_else(default_config_path);
+    let ports = Arc::new(Ports::default());
+    let config = match services::load_config(ports.config.as_ref(), &path).await {
+        Ok(config) => config,
+        Err(error) => return fail(error),
     };
-    match dispatch(cli.command.unwrap_or(Commands::Daemon), path, config).await {
+    let app = App::new(config, path, ports);
+    match dispatch(cli.command.unwrap_or(Commands::Daemon), &app).await {
         Ok(code) => ExitCode::from(code),
-        Err(error) => exit(error),
+        Err(error) => fail(error),
     }
 }
 
-fn exit(error: vpn_geo_core::Error) -> ExitCode {
+fn fail(error: AppError) -> ExitCode {
     error!("{error}");
     ExitCode::from(error.exit_code())
 }
 
-async fn dispatch(
-    command: Commands,
-    path: PathBuf,
-    config: Arc<Config>,
-) -> vpn_geo_core::Result<u8> {
+fn init_logging(verbose: bool) {
+    let _ = log::set_logger(&Logger);
+    log::set_max_level(if verbose {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    });
+}
+
+struct Logger;
+
+impl log::Log for Logger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::max_level()
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            eprintln!("{} {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+fn default_config_path() -> PathBuf {
+    if let Some(base) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(base).join("vpn-geo").join("config.toml");
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".config/vpn-geo/config.toml");
+    }
+    PathBuf::from("config.toml")
+}
+
+async fn dispatch(command: Commands, app: &App<Ports>) -> Result<u8, AppError> {
     match command {
-        Commands::Daemon => run_daemon(config).await,
+        Commands::Daemon => daemon(app).await,
         Commands::Check(args) => {
             let summary = serde_json::json!({
                 "valid": true,
                 "version": VERSION,
-                "config_version": config.version,
-                "path": path,
-                "nodes": config.nodes.len(),
-                "geoip_sources": config.geoip.urls.len(),
-                "custom_mirrors": config.mirrors.len(),
-                "settle_delay": format!("{:?}", config.settle_delay),
-                "quiet_period": format!("{:?}", config.quiet_period),
+                "config_version": app.config.version,
+                "path": app.config_path,
+                "nodes": app.config.nodes.len(),
+                "geoip_sources": app.config.geoip.urls.len(),
+                "custom_mirrors": app.config.mirrors.len(),
+                "architecture": "domain/app/infra/cli",
             });
-            print_json_or(&args.json, &summary, || {
-                println!(
-                    "configuration is valid: {} ({} nodes, {} GeoIP sources, {} custom mirrors)",
-                    path.display(),
-                    config.nodes.len(),
-                    config.geoip.urls.len(),
-                    config.mirrors.len()
-                );
+            json_or(args.json, &summary, || {
+                println!("configuration is valid: {}", app.config_path.display())
             });
             Ok(0)
         }
         Commands::Status(args) => {
             let status = if args.no_dbus {
-                network::NetworkStatus {
-                    vpn_active: false,
-                    vpn_connections: Vec::new(),
-                    active_connections: Vec::new(),
-                    default_devices: Vec::new(),
-                    system_proxy: false,
-                    proxy_environment: false,
-                    desktop_proxy: false,
-                    route: "Unknown (D-Bus inspection disabled)".to_owned(),
-                    confidence: "low".to_owned(),
-                }
+                vpn_geo_domain::decision::network_status(
+                    false,
+                    vec![],
+                    vec![],
+                    vec![],
+                    false,
+                    false,
+                )
             } else {
-                network::status().await?
+                app.ports.network.status().await?
             };
-            print_json_or(&args.json, &status, || network::print_human(&status));
+            json_or(args.json, &status, || print_status(&status));
             Ok(0)
         }
         Commands::Sources(args) => {
-            let sources = serde_json::json!({
-                "urls": config.geoip.urls,
-                "timeout": format!("{:?}", config.geoip.timeout),
-                "min_agreement": config.geoip.min_agreement,
+            let value = serde_json::json!({
+                "urls": app.config.geoip.urls,
+                "timeout": format!("{:?}", app.config.geoip.timeout),
+                "min_agreement": app.config.geoip.min_agreement,
             });
-            print_json_or(&args.json, &sources, || {
-                println!("GeoIP sources (concurrent, majority vote):");
-                for (index, url) in config.geoip.urls.iter().enumerate() {
+            json_or(args.json, &value, || {
+                println!("GeoIP sources (concurrent consensus):");
+                for (index, url) in app.config.geoip.urls.iter().enumerate() {
                     println!("  {}. {url}", index + 1);
                 }
-                println!(
-                    "Timeout: {:?}; minimum agreement: {}",
-                    config.geoip.timeout, config.geoip.min_agreement
-                );
+                println!("Minimum agreement: {}", app.config.geoip.min_agreement);
             });
             Ok(0)
         }
-        Commands::Speed(args) => run_speed(&config, args).await,
-        Commands::Route(args) => run_route(&config, args).await,
-        Commands::Mirror(args) => run_mirror(&config, args).await,
-        Commands::Doctor(args) => run_doctor(&config, &path, args).await,
+        Commands::Speed(args) => {
+            if let Some(value) = args.legacy_apply.as_deref() {
+                if value != "apply" {
+                    return Err(AppError::Domain(vpn_geo_domain::DomainError::invalid(
+                        format!("unexpected speed argument {value:?}"),
+                    )));
+                }
+            }
+            let apply = args.apply || args.legacy_apply.is_some();
+            let (location, results, changed) =
+                services::speed_nodes(app, args.direct, apply).await?;
+            let payload = serde_json::json!({"location": location, "results": results, "priority_changed": changed});
+            json_or(args.json, &payload, || {
+                println!(
+                    "Country: {}; source: {}; agreement: {}\n",
+                    location.country_code, location.source, location.agreement
+                );
+                print_table(&results, true);
+            });
+            Ok(if all_failed(&results) { 1 } else { 0 })
+        }
+        Commands::Route(args) => {
+            if let Some(value) = args.legacy_compare.as_deref() {
+                if value != "compare" {
+                    return Err(AppError::Domain(vpn_geo_domain::DomainError::invalid(
+                        format!("unexpected route argument {value:?}"),
+                    )));
+                }
+            }
+            let (status, location, results) = services::route(
+                app,
+                args.compare || args.legacy_compare.is_some(),
+                args.direct,
+            )
+            .await?;
+            let payload =
+                serde_json::json!({"status": status, "location": location, "results": results});
+            json_or(args.json, &payload, || {
+                if let Some(status) = &status {
+                    print_status(status);
+                    println!();
+                }
+                println!(
+                    "Country: {}; current-route measurement only; VPN is never toggled\n",
+                    location.country_code
+                );
+                print_table(&results, false);
+            });
+            Ok(if all_failed(&results) { 1 } else { 0 })
+        }
+        Commands::Mirror(args) => mirror(app, args).await,
+        Commands::Doctor(args) => {
+            let report = services::doctor(app, args.skip_network).await;
+            json_or(args.json, &report, || {
+                println!("vpn-geo {VERSION} doctor (domain/app/infra/cli)");
+                for check in &report.checks {
+                    println!(
+                        "  {:<22} {} {}",
+                        check.name,
+                        if check.ok { "OK" } else { "WARN" },
+                        check.detail
+                    );
+                }
+            });
+            Ok(0)
+        }
     }
 }
 
-async fn run_daemon(config: Arc<Config>) -> vpn_geo_core::Result<u8> {
+async fn daemon(app: &App<Ports>) -> Result<u8, AppError> {
     let mut backoff = Duration::from_secs(1);
     loop {
-        match daemon::run(config.clone()).await {
+        match services::daemon(app).await {
             Ok(()) => return Ok(0),
             Err(error) => {
                 error!(
@@ -274,7 +351,7 @@ async fn run_daemon(config: Arc<Config>) -> vpn_geo_core::Result<u8> {
                     backoff.as_secs()
                 );
                 tokio::select! {
-                    _ = daemon::shutdown_signal() => return Ok(0),
+                    _ = shutdown() => return Ok(0),
                     _ = tokio::time::sleep(backoff) => {}
                 }
                 backoff = (backoff * 2).min(Duration::from_secs(30));
@@ -283,229 +360,67 @@ async fn run_daemon(config: Arc<Config>) -> vpn_geo_core::Result<u8> {
     }
 }
 
-async fn run_speed(config: &Config, args: SpeedArgs) -> vpn_geo_core::Result<u8> {
-    if let Some(value) = args.legacy_apply.as_deref() {
-        if value != "apply" {
-            return Err(vpn_geo_core::Error::InvalidArgument(format!(
-                "unexpected speed argument {value:?}"
-            )));
-        }
-    }
-    let apply = args.apply || args.legacy_apply.is_some();
-    let location = geoip::locate(config, args.direct).await?;
-    let candidates = benchmark::nearest(
-        &config.nodes,
-        &location,
-        config.benchmark.candidate_countries,
-    );
-    if candidates.is_empty() {
-        return Err(vpn_geo_core::Error::NotFound(
-            "no nodes have both latitude/longitude and test_url".to_owned(),
-        ));
-    }
-    let targets = candidates
-        .iter()
-        .map(|(node, distance)| {
-            (
-                node.name.clone(),
-                node.test_url.clone().unwrap_or_default(),
-                Some(*distance),
-            )
-        })
-        .collect();
-    let results = benchmark::run(
-        targets,
-        benchmark::Options::from_config(config, args.direct),
-    )
-    .await?;
-    let payload = serde_json::json!({
-        "location": location,
-        "results": results,
-    });
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&payload).unwrap_or_default()
-        );
-    } else {
-        println!(
-            "Current public-IP country: {} ({:.4}, {:.4}); GeoIP source: {}; agreement: {}/{}\n",
-            location.country_code,
-            location.latitude,
-            location.longitude,
-            location.source,
-            location.agreement,
-            config.geoip.urls.len()
-        );
-        benchmark::print_table(&results, true);
-    }
-    if apply {
-        let fastest = results
-            .iter()
-            .find(|result| result.error.is_none())
-            .ok_or_else(|| {
-                vpn_geo_core::Error::NotFound("no successful speed result to apply".to_owned())
-            })?;
-        let node = config
-            .nodes
-            .iter()
-            .find(|node| node.name == fastest.label)
-            .ok_or_else(|| {
-                vpn_geo_core::Error::Internal(format!(
-                    "cannot map speed result {:?} to a configured node",
-                    fastest.label
-                ))
-            })?;
-        let changed = vpn_geo_core::priority::Manager::new(config)
-            .promote_node(node)
-            .await?;
-        info!(
-            "benchmark result applied (node={}, priority_changed={changed})",
-            node.name
-        );
-    }
-    Ok(if all_failed(&results) { 1 } else { 0 })
+async fn shutdown() {
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install SIGTERM handler");
+    tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
 }
 
-async fn run_route(config: &Config, args: RouteArgs) -> vpn_geo_core::Result<u8> {
-    if let Some(value) = args.legacy_compare.as_deref() {
-        if value != "compare" {
-            return Err(vpn_geo_core::Error::InvalidArgument(format!(
-                "unexpected route argument {value:?}"
-            )));
-        }
-    }
-    let compare = args.compare || args.legacy_compare.is_some();
-    let status = network::status().await.ok();
-    let location = geoip::locate(config, args.direct).await?;
-    let test_url = "https://speed.cloudflare.com/__down?bytes=1000000";
-    let options = benchmark::Options {
-        parallel: 1,
-        ..benchmark::Options::from_config(config, false)
-    };
-    let mut results = benchmark::run(
-        vec![("current-route".to_owned(), test_url.to_owned(), None)],
-        options.clone(),
-    )
-    .await?;
-    if compare {
-        let direct_options = benchmark::Options {
-            direct: true,
-            ..options
-        };
-        let mut direct = benchmark::run(
-            vec![("direct-baseline".to_owned(), test_url.to_owned(), None)],
-            direct_options,
-        )
-        .await
-        .unwrap_or_default();
-        results.append(&mut direct);
-    }
-    let payload = serde_json::json!({
-        "status": status,
-        "location": location,
-        "results": results,
-    });
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&payload).unwrap_or_default()
-        );
-    } else {
-        if let Some(status) = &status {
-            network::print_human(status);
-            println!();
-        }
-        println!(
-            "Public-IP country: {} (source: {}, agreement: {}/{})",
-            location.country_code,
-            location.source,
-            location.agreement,
-            config.geoip.urls.len()
-        );
-        println!("Note: this measures the current route; toggling VPN is not performed.\n");
-        benchmark::print_table(&results, false);
-    }
-    Ok(if all_failed(&results) { 1 } else { 0 })
-}
-
-async fn run_mirror(config: &Config, args: MirrorArgs) -> vpn_geo_core::Result<u8> {
-    let catalog = mirror::Catalog::from_config(config);
+async fn mirror(app: &App<Ports>, args: MirrorArgs) -> Result<u8, AppError> {
     match args.action {
         MirrorAction::List(args) => {
-            let mirrors = catalog.region(args.region.map(Region::core));
-            if args.json {
+            let (mirrors, built_in) = services::mirror_catalog(&app.config);
+            let selected = vpn_geo_domain::catalog::select(&mirrors, args.region.map(Region::core));
+            json_or(args.json, &selected, || {
                 println!(
-                    "{}",
-                    serde_json::to_string_pretty(&mirrors).unwrap_or_default()
+                    "{:<24} {:<8} {:<8} {:>8} URL",
+                    "NAME", "KIND", "REGION", "PRIORITY"
                 );
-            } else {
-                println!(
-                    "{:<24} {:<8} {:<8} {:>8} {:<6} URL",
-                    "NAME", "KIND", "REGION", "PRIORITY", "STATE"
-                );
-                for item in &mirrors {
+                for mirror in &selected {
                     println!(
-                        "{:<24} {:<8} {:<8} {:>8} {:<6} {}",
-                        item.name,
-                        match item.kind {
-                            vpn_geo_core::config::MirrorKind::Pacman => "pacman",
-                            vpn_geo_core::config::MirrorKind::Generic => "generic",
-                        },
-                        item.region.as_str(),
-                        item.priority,
-                        if item.enabled { "on" } else { "off" },
-                        item.url
+                        "{:<24} {:<8} {:<8} {:>8} {}",
+                        mirror.name,
+                        kind(mirror.kind),
+                        mirror.region.as_str(),
+                        mirror.priority,
+                        mirror.url
                     );
                 }
-                if catalog.is_built_in() {
-                    println!(
-                        "\nUsing built-in source catalog ({} visible). Add [[mirrors]] to customize it.",
-                        mirrors.len()
-                    );
+                if built_in {
+                    println!("\nBuilt-in catalog: {} visible", selected.len());
                 }
-            }
+            });
             Ok(0)
         }
         MirrorAction::Speed(args) => {
-            let mirrors = catalog.region(args.region.map(Region::core));
-            let results = mirror::speed(config, &mirrors, args.direct).await?;
-            print_json_or(&args.json, &results, || {
-                benchmark::print_table(&results, false)
-            });
+            let results =
+                services::mirror_speed(app, args.region.map(Region::core), args.direct).await?;
+            json_or(args.json, &results, || print_table(&results, false));
             Ok(if all_failed(&results) { 1 } else { 0 })
         }
         MirrorAction::Apply(args) => {
             if !args.yes {
-                return Err(vpn_geo_core::Error::InvalidArgument(
-                    "mirror apply changes /etc/pacman.d/mirrorlist; confirm with --yes".to_owned(),
-                ));
+                return Err(AppError::Domain(vpn_geo_domain::DomainError::invalid(
+                    "mirror apply changes /etc/pacman.d/mirrorlist; confirm with --yes",
+                )));
             }
-            let item = catalog.find(&args.name).ok_or_else(|| {
-                vpn_geo_core::Error::NotFound(format!(
-                    "unknown mirror source {:?}; run `vpn-geo mirror list`",
-                    args.name
-                ))
-            })?;
-            info!("{}", mirror::apply(&item).await?);
+            info!("{}", services::mirror_apply(app, &args.name).await?);
             Ok(0)
         }
         MirrorAction::Sync(args) => {
-            let regions: Vec<MirrorRegion> =
-                args.regions.iter().map(|region| region.core()).collect();
-            let (mirrors, summary) =
-                mirror::sync_official(config, &regions, args.per_region).await?;
-            if let Some(path) = &args.output {
-                let text = toml::to_string_pretty(&serde_json::json!({ "mirrors": mirrors }))
+            let regions: Vec<_> = args.regions.iter().map(|region| region.core()).collect();
+            let (mirrors, summary) = services::mirror_sync(app, &regions, args.per_region).await?;
+            if let Some(path) = args.output {
+                let text = toml::to_string_pretty(&serde_json::json!({"mirrors": mirrors}))
                     .unwrap_or_default();
-                tokio::fs::write(path, text)
+                tokio::fs::write(&path, text)
                     .await
-                    .map_err(|error| vpn_geo_core::Error::io(path, error))?;
+                    .map_err(|error| AppError::io(format!("write {}: {error}", path.display())))?;
             }
-            let payload = serde_json::json!({ "summary": summary, "mirrors": mirrors });
-            print_json_or(&args.json, &payload, || {
+            let payload = serde_json::json!({"summary": summary, "mirrors": mirrors});
+            json_or(args.json, &payload, || {
                 println!(
-                    "Official status: {} entries; {} region candidates; {} selected",
+                    "Official sources: {} entries; {} candidates; {} selected",
                     summary.total_official, summary.candidates, summary.selected
                 );
                 for (region, count) in &summary.regions {
@@ -515,30 +430,14 @@ async fn run_mirror(config: &Config, args: MirrorArgs) -> vpn_geo_core::Result<u
             Ok(0)
         }
         MirrorAction::Best(args) => {
-            let mirrors = catalog.region(args.region.map(Region::core));
-            let results = mirror::speed(config, &mirrors, args.direct).await?;
-            let best = results
-                .iter()
-                .find(|result| result.error.is_none())
-                .ok_or_else(|| {
-                    vpn_geo_core::Error::NotFound("all mirror speed tests failed".to_owned())
-                })?;
-            let item = catalog.find(&best.label).ok_or_else(|| {
-                vpn_geo_core::Error::Internal(format!(
-                    "cannot map speed result {:?} to a mirror",
-                    best.label
-                ))
-            })?;
-            let applied = if args.yes {
-                Some(mirror::apply(&item).await?)
-            } else {
-                None
-            };
-            let payload = serde_json::json!({ "best": item, "result": best, "applied": applied, "results": results });
-            print_json_or(&args.json, &payload, || {
+            let (mirror, best, results, applied) =
+                services::mirror_best(app, args.region.map(Region::core), args.direct, args.yes)
+                    .await?;
+            let payload = serde_json::json!({"best": mirror, "result": best, "results": results, "applied": applied});
+            json_or(args.json, &payload, || {
                 println!(
                     "Fastest source: {} ({:.2} Mbps, {:.1} ms)",
-                    item.name,
+                    mirror.name,
                     best.mbps,
                     best.latency_ms.unwrap_or_default()
                 );
@@ -553,94 +452,108 @@ async fn run_mirror(config: &Config, args: MirrorArgs) -> vpn_geo_core::Result<u
     }
 }
 
-async fn run_doctor(
-    config: &Config,
-    path: &std::path::Path,
-    args: DoctorArgs,
-) -> vpn_geo_core::Result<u8> {
-    let catalog = mirror::Catalog::from_config(config);
-    let network_status = if args.skip_network {
-        None
-    } else {
-        network::status().await.ok()
-    };
-    let location = if args.skip_network {
-        None
-    } else {
-        geoip::locate(config, false).await.ok()
-    };
-    let probe = if args.skip_network {
-        None
-    } else {
-        Some(
-            benchmark::run(
-                catalog
-                    .region(Some(MirrorRegion::Cn))
-                    .into_iter()
-                    .take(1)
-                    .map(|item| (item.name, item.test_url, None))
-                    .collect(),
-                benchmark::Options {
-                    samples: 1,
-                    timeout: Duration::from_secs(3),
-                    download_bytes: 4096,
-                    parallel: 1,
-                    direct: false,
-                },
-            )
-            .await
-            .ok(),
-        )
-    };
-    let checks = serde_json::json!([
-        { "name": "configuration", "ok": true, "path": path },
-        { "name": "nodes", "ok": !config.nodes.is_empty(), "count": config.nodes.len() },
-        { "name": "geoip_sources", "ok": !config.geoip.urls.is_empty(), "count": config.geoip.urls.len() },
-        { "name": "mirrors", "ok": !catalog.is_empty(), "count": catalog.len(), "built_in": catalog.is_built_in() },
-        { "name": "networkmanager", "ok": network_status.is_some(), "status": network_status },
-        { "name": "public_ip_location", "ok": location.is_some(), "location": location },
-        { "name": "mirror_reachability", "ok": probe.as_ref().and_then(|value| value.as_ref()).is_some_and(|results| results.iter().any(|result| result.error.is_none())), "probe": probe },
-    ]);
-    print_json_or(&args.json, &checks, || {
-        println!("vpn-geo {VERSION} doctor");
-        println!("  configuration: OK ({})", path.display());
-        println!("  nodes: {} configured", config.nodes.len());
-        println!("  GeoIP sources: {} configured", config.geoip.urls.len());
+fn print_status(status: &vpn_geo_domain::model::NetworkStatus) {
+    println!("Route:          {}", status.route);
+    println!("Confidence:     {}", status.confidence);
+    println!(
+        "VPN:            {}",
+        if status.vpn_active {
+            "active"
+        } else {
+            "inactive"
+        }
+    );
+    println!(
+        "System proxy:   {}",
+        if status.system_proxy {
+            "detected"
+        } else {
+            "not detected"
+        }
+    );
+    println!(
+        "Proxy env:      {}",
+        if status.proxy_environment {
+            "set"
+        } else {
+            "unset"
+        }
+    );
+    println!(
+        "Desktop proxy:  {}",
+        if status.desktop_proxy {
+            "detected"
+        } else {
+            "not detected"
+        }
+    );
+    if !status.default_devices.is_empty() {
+        println!("Devices:        {}", status.default_devices.join(", "));
+    }
+    println!(
+        "Active links:   {}",
+        if status.active_connections.is_empty() {
+            "none".into()
+        } else {
+            status.active_connections.join(", ")
+        }
+    );
+}
+
+fn print_table(results: &[SpeedResult], distance: bool) {
+    if distance {
         println!(
-            "  mirrors: {} available{}",
-            catalog.len(),
-            if catalog.is_built_in() {
-                " (built-in)"
-            } else {
-                ""
-            }
+            "{:<24} {:>10} {:>12} {:>14}  STATUS",
+            "TARGET", "DISTANCE", "LATENCY", "THROUGHPUT"
         );
+    } else {
         println!(
-            "  NetworkManager: {}",
-            if network_status.is_some() {
-                "OK"
-            } else {
-                "unavailable"
-            }
+            "{:<24} {:>12} {:>14}  STATUS",
+            "TARGET", "LATENCY", "THROUGHPUT"
         );
-        println!(
-            "  public-IP location: {}",
-            if location.is_some() {
-                "OK"
-            } else {
-                "unavailable"
-            }
-        );
-    });
-    Ok(0)
+    }
+    for result in results {
+        let latency = result
+            .latency_ms
+            .map(|value| format!("{value:.1} ms"))
+            .unwrap_or_else(|| "-".into());
+        let throughput = if result.error.is_none() {
+            format!("{:.2} Mbps", result.mbps)
+        } else {
+            "-".into()
+        };
+        let status = result.error.as_deref().unwrap_or("ok");
+        if distance {
+            let km = result
+                .distance_km
+                .map(|value| format!("{value:.0} km"))
+                .unwrap_or_else(|| "-".into());
+            println!(
+                "{:<24} {:>10} {:>12} {:>14}  {status}",
+                result.label, km, latency, throughput
+            );
+        } else {
+            println!(
+                "{:<24} {:>12} {:>14}  {status}",
+                result.label, latency, throughput
+            );
+        }
+    }
 }
 
 fn all_failed(results: &[SpeedResult]) -> bool {
     results.iter().all(|result| result.error.is_some())
 }
 
-fn print_json_or<T: serde::Serialize>(json: &bool, value: &T, human: impl FnOnce()) {
-    if *json {
+fn kind(kind: vpn_geo_domain::model::MirrorKind) -> &'static str {
+    match kind {
+        vpn_geo_domain::model::MirrorKind::Pacman => "pacman",
+        vpn_geo_domain::model::MirrorKind::Generic => "generic",
+    }
+}
+
+fn json_or<T: serde::Serialize>(json: bool, value: &T, human: impl FnOnce()) {
+    if json {
         println!(
             "{}",
             serde_json::to_string_pretty(value).unwrap_or_default()

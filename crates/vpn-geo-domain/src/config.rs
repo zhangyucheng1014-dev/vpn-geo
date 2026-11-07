@@ -1,14 +1,9 @@
-use std::{
-    collections::HashSet,
-    env,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{collections::HashSet, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::{APP_NAME, Error, Result};
+use crate::{DomainError, DomainResult, model::Mirror};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Config {
@@ -45,65 +40,6 @@ pub struct Node {
     pub latitude: f64,
     pub longitude: f64,
     pub test_url: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MirrorRegion {
-    Cn,
-    Hk,
-    Jp,
-    Us,
-    #[default]
-    Global,
-}
-
-impl MirrorRegion {
-    pub const ALL: [Self; 5] = [Self::Cn, Self::Hk, Self::Jp, Self::Us, Self::Global];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Cn => "cn",
-            Self::Hk => "hk",
-            Self::Jp => "jp",
-            Self::Us => "us",
-            Self::Global => "global",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "cn" | "china" | "中" | "中国" | "大陆" => Some(Self::Cn),
-            "hk" | "hongkong" | "hong-kong" | "港" | "香港" => Some(Self::Hk),
-            "jp" | "japan" | "日" | "日本" => Some(Self::Jp),
-            "us" | "usa" | "美" | "美国" => Some(Self::Us),
-            "global" | "all" | "全球" => Some(Self::Global),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MirrorKind {
-    #[default]
-    Pacman,
-    Generic,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Mirror {
-    pub name: String,
-    #[serde(default)]
-    pub kind: MirrorKind,
-    #[serde(default)]
-    pub region: MirrorRegion,
-    pub url: String,
-    pub test_url: String,
-    #[serde(default)]
-    pub priority: i32,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,36 +88,17 @@ struct RawNode {
     test_url: Option<String>,
 }
 
-fn default_true() -> bool {
-    true
-}
-
 impl Config {
-    pub fn default_path() -> PathBuf {
-        if let Some(base) = env::var_os("XDG_CONFIG_HOME") {
-            return PathBuf::from(base).join(APP_NAME).join("config.toml");
-        }
-        if let Some(home) = env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join(".config")
-                .join(APP_NAME)
-                .join("config.toml");
-        }
-        PathBuf::from("config.toml")
-    }
-
-    pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path).map_err(|error| Error::io(path, error))?;
-        let raw: RawConfig = toml::from_str(&text)
-            .map_err(|error| Error::config(format!("parse {}: {error}", path.display())))?;
+    pub fn parse(text: &str) -> DomainResult<Self> {
+        let raw: RawConfig = toml_parse(text)?;
         Self::from_raw(raw)
     }
 
-    fn from_raw(raw: RawConfig) -> Result<Self> {
-        let version = raw.version.unwrap_or(2);
-        if version > 3 {
-            return Err(Error::config(format!(
-                "unsupported configuration version {version}"
+    fn from_raw(raw: RawConfig) -> DomainResult<Self> {
+        let version = raw.version.unwrap_or(3);
+        if version > 4 {
+            return Err(DomainError::config(format!(
+                "unsupported config version {version}"
             )));
         }
         let geoip_raw = raw.geoip.unwrap_or_default();
@@ -196,17 +113,17 @@ impl Config {
                 .collect();
         }
         if urls.is_empty() || urls.len() > 8 {
-            return Err(Error::config("geoip needs between 1 and 8 sources"));
+            return Err(DomainError::config("geoip needs between 1 and 8 sources"));
         }
-        let min_agreement = geoip_raw.min_agreement.unwrap_or(2).max(1).min(urls.len());
-        let mut seen_sources = HashSet::new();
+        let mut seen = HashSet::new();
         for url in &urls {
             validate_url("geoip source", url)?;
-            if !seen_sources.insert(url.clone()) {
-                return Err(Error::config(format!("duplicate GeoIP source: {url}")));
+            if !seen.insert(url.clone()) {
+                return Err(DomainError::config(format!(
+                    "duplicate GeoIP source: {url}"
+                )));
             }
         }
-
         let benchmark_raw = raw.benchmark.unwrap_or_default();
         let benchmark = BenchmarkConfig {
             candidate_countries: benchmark_raw.candidate_countries.unwrap_or(3),
@@ -228,10 +145,9 @@ impl Config {
             || benchmark.parallel == 0
             || benchmark.parallel > 32
         {
-            return Err(Error::config("benchmark values exceed safe limits"));
+            return Err(DomainError::config("benchmark values exceed safe limits"));
         }
-
-        let mut nodes = Vec::with_capacity(raw.nodes.len());
+        let mut nodes = Vec::new();
         let mut uuids = HashSet::new();
         for (index, node) in raw.nodes.into_iter().enumerate() {
             let name = node.name.unwrap_or_default().trim().to_owned();
@@ -242,12 +158,12 @@ impl Config {
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty());
             if name.is_empty() || uuid.is_empty() || !valid_country(&country) {
-                return Err(Error::config(format!(
+                return Err(DomainError::config(format!(
                     "nodes[{index}] needs name, uuid, and a two-letter country code"
                 )));
             }
             if !uuids.insert(uuid.clone()) {
-                return Err(Error::config(format!(
+                return Err(DomainError::config(format!(
                     "nodes[{index}] repeats UUID {uuid:?}"
                 )));
             }
@@ -257,7 +173,7 @@ impl Config {
                     || !node.longitude.is_finite()
                     || !(-180.0..=180.0).contains(&node.longitude))
             {
-                return Err(Error::config(format!(
+                return Err(DomainError::config(format!(
                     "nodes[{index}] coordinates are out of range"
                 )));
             }
@@ -274,21 +190,22 @@ impl Config {
             });
         }
         if nodes.is_empty() {
-            return Err(Error::config("at least one [[nodes]] entry is required"));
+            return Err(DomainError::config(
+                "at least one [[nodes]] entry is required",
+            ));
         }
-
-        let mut mirror_names = HashSet::new();
+        let mut names = HashSet::new();
         for (index, mirror) in raw.mirrors.iter().enumerate() {
             if mirror.name.trim().is_empty()
                 || mirror.url.trim().is_empty()
                 || mirror.test_url.trim().is_empty()
             {
-                return Err(Error::config(format!(
+                return Err(DomainError::config(format!(
                     "mirrors[{index}] needs name, url, and test_url"
                 )));
             }
-            if !mirror_names.insert(mirror.name.clone()) {
-                return Err(Error::config(format!(
+            if !names.insert(mirror.name.clone()) {
+                return Err(DomainError::config(format!(
                     "mirrors[{index}] repeats name {:?}",
                     mirror.name
                 )));
@@ -296,7 +213,6 @@ impl Config {
             validate_url(&format!("mirrors[{index}].url"), &mirror.url)?;
             validate_url(&format!("mirrors[{index}].test_url"), &mirror.test_url)?;
         }
-
         Ok(Self {
             version,
             settle_delay: parse_duration(
@@ -308,18 +224,22 @@ impl Config {
                 raw.quiet_period.as_deref().unwrap_or("500ms"),
             )?,
             geoip: GeoIpConfig {
+                min_agreement: geoip_raw.min_agreement.unwrap_or(2).max(1).min(urls.len()),
                 urls,
                 timeout: parse_duration(
                     "geoip.timeout",
                     geoip_raw.timeout.as_deref().unwrap_or("10s"),
                 )?,
-                min_agreement,
             },
             benchmark,
             nodes,
             mirrors: raw.mirrors,
         })
     }
+}
+
+fn toml_parse(text: &str) -> DomainResult<RawConfig> {
+    toml::from_str(text).map_err(|error| DomainError::config(format!("parse TOML: {error}")))
 }
 
 pub fn default_geoip_urls() -> &'static [&'static str] {
@@ -330,72 +250,15 @@ pub fn default_geoip_urls() -> &'static [&'static str] {
     ]
 }
 
-pub fn default_mirrors() -> Vec<Mirror> {
-    const CATALOG: &str = r#"
-cn-tsinghua,cn,https://mirrors.tuna.tsinghua.edu.cn/archlinux/
-cn-ustc,cn,https://mirrors.ustc.edu.cn/archlinux/
-cn-aliyun,cn,https://mirrors.aliyun.com/archlinux/
-cn-jlu,cn,https://mirrors.jlu.edu.cn/archlinux/
-cn-nju,cn,https://mirrors.nju.edu.cn/archlinux/
-cn-xjtu,cn,https://mirrors.xjtu.edu.cn/archlinux/
-cn-hust,cn,https://mirrors.hust.edu.cn/archlinux/
-cn-nyist,cn,https://mirror.nyist.edu.cn/archlinux/
-hk-cicku,hk,https://hk.mirrors.cicku.me/archlinux/
-hk-rackspace,hk,https://hkg.mirror.rackspace.com/archlinux/
-hk-koddos,hk,https://mirror-hk.koddos.net/archlinux/
-jp-miraa,jp,https://www.miraa.jp/archlinux/
-jp-aria,jp,https://mirror.aria-on-the-planet.es/archlinux/
-jp-yamagata,jp,https://ftp.yz.yamagata-u.ac.jp/pub/linux/archlinux/
-jp-jaist,jp,https://ftp.jaist.ac.jp/pub/Linux/ArchLinux/
-jp-cicku,jp,https://jp.mirrors.cicku.me/archlinux/
-jp-rain,jp,https://mirror.rain.ne.jp/archlinux/
-jp-hashy,jp,https://mirror.hashy0917.net/archlinux/
-us-mtu,us,https://mirrors.lug.mtu.edu/archlinux/
-us-rit,us,https://mirrors.rit.edu/archlinux/
-us-umd,us,https://mirror.umd.edu/archlinux/
-us-osuosl,us,https://ftp.osuosl.org/pub/archlinux/
-us-pkgbuild-la,us,https://losangeles.mirror.pkgbuild.com/
-us-cicku,us,https://us.mirrors.cicku.me/archlinux/
-us-constant,us,https://arch.mirror.constant.com/
-us-tzulo,us,https://mirror.tzulo.com/archlinux/
-us-misaka-iad,us,https://iad.mirrors.misaka.one/archlinux/
-us-berkeley,us,https://mirrors.ocf.berkeley.edu/archlinux/
-global-cloudflare,global,https://cloudflaremirrors.com/archlinux/
-"#;
-    CATALOG
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter_map(|line| {
-            let (name, rest) = line.split_once(',')?;
-            let (region, base) = rest.split_once(',')?;
-            Some((name, region, base))
-        })
-        .map(|(name, region, base)| {
-            let base = base.trim_end_matches('/');
-            Mirror {
-                name: name.to_owned(),
-                kind: MirrorKind::Pacman,
-                region: MirrorRegion::parse(region).unwrap_or_default(),
-                url: format!("{base}/$repo/os/$arch"),
-                test_url: format!("{base}/core/os/x86_64/core.db.tar.gz"),
-                priority: 0,
-                enabled: true,
-            }
-        })
-        .collect()
-}
-
-pub fn parse_duration(field: &str, value: &str) -> Result<Duration> {
+pub fn parse_duration(field: &str, value: &str) -> DomainResult<Duration> {
     let value = value.trim();
-    let split = value.find(|character: char| character.is_ascii_alphabetic());
-    let (number, unit) = match split {
+    let (number, unit) = match value.find(|character: char| character.is_ascii_alphabetic()) {
         Some(index) => (&value[..index], &value[index..]),
         None => (value, "s"),
     };
     let number: f64 = number
         .parse()
-        .map_err(|_| Error::config(format!("{field} must be a non-negative duration")))?;
+        .map_err(|_| DomainError::config(format!("{field} must be a non-negative duration")))?;
     let multiplier = match unit {
         "ns" => 1e-9,
         "us" | "µs" => 1e-6,
@@ -404,25 +267,25 @@ pub fn parse_duration(field: &str, value: &str) -> Result<Duration> {
         "m" => 60.0,
         "h" => 3600.0,
         _ => {
-            return Err(Error::config(format!(
+            return Err(DomainError::config(format!(
                 "{field} has an unsupported duration unit"
             )));
         }
     };
     let seconds = number * multiplier;
     if !seconds.is_finite() || seconds < 0.0 || seconds > 86400.0 {
-        return Err(Error::config(format!(
+        return Err(DomainError::config(format!(
             "{field} must be between 0 and 24 hours"
         )));
     }
     Ok(Duration::from_secs_f64(seconds))
 }
 
-pub fn validate_url(field: &str, raw: &str) -> Result<()> {
+pub fn validate_url(field: &str, raw: &str) -> DomainResult<()> {
     let parsed = Url::parse(raw)
-        .map_err(|_| Error::config(format!("{field} must be an absolute http(s) URL")))?;
+        .map_err(|_| DomainError::config(format!("{field} must be an absolute http(s) URL")))?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-        return Err(Error::config(format!(
+        return Err(DomainError::config(format!(
             "{field} must be an absolute http(s) URL"
         )));
     }
@@ -445,9 +308,9 @@ country = "jp"
 "#;
 
     #[test]
-    fn legacy_config_keeps_defaults() {
-        let config = Config::from_raw(toml::from_str(BASE).unwrap()).unwrap();
-        assert_eq!(config.version, 2);
+    fn parses_legacy_config_with_defaults() {
+        let config = Config::parse(BASE).unwrap();
+        assert_eq!(config.version, 3);
         assert_eq!(config.nodes[0].country, "JP");
         assert_eq!(config.geoip.urls.len(), 3);
         assert_eq!(config.geoip.min_agreement, 2);
@@ -455,23 +318,19 @@ country = "jp"
 
     #[test]
     fn rejects_unknown_keys_and_duplicate_uuids() {
-        assert!(toml::from_str::<RawConfig>(&format!("unknown = true\n{BASE}")).is_err());
+        assert!(Config::parse(&format!("unknown = true\n{BASE}")).is_err());
         let duplicate =
             format!("{BASE}\n[[nodes]]\nname = \"jp2\"\nuuid = \"uuid-jp\"\ncountry = \"JP\"\n");
-        assert!(Config::from_raw(toml::from_str(&duplicate).unwrap()).is_err());
+        assert!(Config::parse(&duplicate).is_err());
     }
 
     #[test]
-    fn catalog_has_multiple_sources_per_region() {
-        let catalog = default_mirrors();
-        assert_eq!(catalog.len(), 29);
-        for region in [
-            MirrorRegion::Cn,
-            MirrorRegion::Hk,
-            MirrorRegion::Jp,
-            MirrorRegion::Us,
-        ] {
-            assert!(catalog.iter().filter(|item| item.region == region).count() >= 3);
-        }
+    fn parses_durations() {
+        assert_eq!(
+            parse_duration("d", "500ms").unwrap(),
+            Duration::from_millis(500)
+        );
+        assert_eq!(parse_duration("d", "2").unwrap(), Duration::from_secs(2));
+        assert!(parse_duration("d", "-1s").is_err());
     }
 }

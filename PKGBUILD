@@ -1,6 +1,6 @@
 # Maintainer: zhangyucheng1014-dev <zhangyucheng1014-dev@users.noreply.github.com>
 pkgname=vpn-geo
-pkgver=3.0.0
+pkgver=4.0.0
 pkgrel=1
 pkgdesc='Workspace-based NetworkManager VPN prioritizer, diagnostics and regional mirror manager'
 arch=('x86_64' 'aarch64' 'armv7h')

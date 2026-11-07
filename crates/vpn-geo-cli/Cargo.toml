@@ -12,11 +12,12 @@ name = "vpn-geo"
 path = "src/main.rs"
 
 [dependencies]
-anyhow.workspace = true
 clap.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-toml.workspace = true
 tokio.workspace = true
-vpn-geo-core = { path = "../vpn-geo-core" }
+toml.workspace = true
+vpn-geo-app.workspace = true
+vpn-geo-domain.workspace = true
+vpn-geo-infra.workspace = true

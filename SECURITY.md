@@ -1,6 +1,6 @@
 # Security Policy
 
-`vpn-geo` only changes `connection.autoconnect-priority` for NetworkManager profiles explicitly listed in the local configuration during normal daemon operation. It never reads or modifies VPN passwords, private keys, server addresses, routes, or DNS settings.
+`vpn-geo` only changes `connection.autoconnect-priority` for NetworkManager profiles explicitly listed in the local configuration during normal daemon operation. All external interactions are isolated behind app-layer ports and infra adapters. It never reads or modifies VPN passwords, private keys, server addresses, routes, or DNS settings.
 
 `speed apply` promotes one configured node. `mirror apply NAME --yes` and `mirror best --yes` are the only commands that write outside the state directory: they edit a clearly marked block in `/etc/pacman.d/mirrorlist`, create a backup, and refresh pacman databases. They require root, an explicit confirmation, and a configured `kind = "pacman"` source. `mirror sync --output FILE` writes a generated TOML fragment only to the requested path. All other benchmarks, diagnostics, and status commands are read-only with respect to system configuration.
 

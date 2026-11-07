@@ -1,29 +1,30 @@
-# vpn-geo 3.0：全量重构的 Rust Workspace
+# vpn-geo 4.0：四层六边形架构全量重写
 
 [![CI](https://github.com/zhangyucheng1014-dev/vpn-geo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zhangyucheng1014-dev/vpn-geo/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/zhangyucheng1014-dev/vpn-geo?display_name=tag)](https://github.com/zhangyucheng1014-dev/vpn-geo/releases) [![License](https://img.shields.io/github/license/zhangyucheng1014-dev/vpn-geo)](LICENSE) [![Rust](https://img.shields.io/badge/Rust-1.85%2B-dea584?logo=rust&logoColor=white)](Cargo.toml)
 
 **中文** | [English](README.en.md)
 
-`vpn-geo` 已完成第三次全量重写：从单 crate Rust 程序重构为 `vpn-geo-core` + `vpn-geo-cli` 的 Cargo workspace。核心领域逻辑、配置模型、服务层和命令行输出彻底分离；错误处理改为结构化 `thiserror`，CLI 改用 `clap`，镜像目录改为数据驱动，并支持从 Arch Linux 官方镜像状态动态生成候选源。
+`vpn-geo` 已再次全量重写为四层 Cargo workspace：`domain` 是零 I/O 的纯规则层，`app` 是用例与端口，`infra` 是外部适配器，`cli` 只负责解析参数和渲染输出。所有系统交互都通过 `async_trait` 端口注入，业务逻辑可独立测试，并且保留了 1.x/2.x/3.x 配置与命令兼容性。
 
-原有能力全部保留：NetworkManager VPN 断开事件、路由稳定等待、多 GeoIP 源、国家节点优先级、状态锁、`check`/`speed`/`speed apply`/`status`/`route`/`mirror`/`sources`、区域镜像源、JSON 输出、pacman 安全切换。程序仍然不会主动连接、断开或切换 VPN，也只修改配置中明确列出的 UUID 的 `connection.autoconnect-priority`。
+原有能力全部保留：事件驱动 NetworkManager VPN 断开处理、稳定路由等待、多 GeoIP 源共识、国家节点优先级、状态锁、区域镜像目录、官方源动态同步、镜像评分、pacman 安全切换、VPN/代理/直连诊断与 JSON 输出。守护进程不会主动连接、断开或切换 VPN；除 `mirror apply`/`mirror best --yes` 的 mirrorlist 写入外，只修改配置中明确列出的 UUID 的 `connection.autoconnect-priority`。
 
-## 3.0 架构
+## 四层架构
 
-- `crates/vpn-geo-core`：配置、错误、HTTP、GeoIP 共识、NetworkManager D-Bus、守护状态机、测速、镜像目录、pacman 写入。
-- `crates/vpn-geo-cli`：clap 命令解析、表格/JSON 输出、退出码和脚本接口。
-- `Cargo.toml`：workspace 统一版本、依赖与 release profile；`vpn-geo-core` 在发布构建中使用更高优化级别。
-- 结构化错误区分配置错误（退出码 2）、未找到（3）和运行时错误（1）。
-- 测速结果包含 `latency_ms`、`mbps` 和综合评分；`mirror best` 会按吞吐/延迟评分选择最佳源。
+- `crates/vpn-geo-domain`：配置解析、目录数据、GeoIP 共识、测速评分、网络状态判定和断开状态机；不依赖 Tokio、D-Bus 或 HTTP。
+- `crates/vpn-geo-app`：`ConfigSource`、`GeoIpGateway`、`NetworkGateway`、`PriorityGateway`、`SpeedGateway`、`MirrorGateway`、`StateStore`、`VpnEventStream` 端口，以及 `speed`、`route`、`doctor`、`mirror`、守护调度用例。
+- `crates/vpn-geo-infra`：reqwest/rustls、zbus D-Bus、nmcli、flock 状态文件、官方镜像状态、pacman mirrorlist、配置仓库等适配器。
+- `crates/vpn-geo-cli`：clap 命令树、表格/JSON 输出、日志和退出码。
+
+这种拆法把「做什么」与「怎么做」分开：替换 HTTP 库、D-Bus 实现或 CLI 不需要改领域规则；替换守护策略也不必碰 NetworkManager 适配器。
 
 ## 命令
 
 ```bash
 vpn-geo                              # 后台事件监听；daemon 为显式别名
-vpn-geo check [--json]               # 校验配置
+vpn-geo check [--json]               # 校验配置并显示架构/版本摘要
 vpn-geo status [--json] [--no-dbus]  # VPN / 系统代理 / 设备 / 线路状态
 vpn-geo sources [--json]             # GeoIP 源、超时和最小共识数
-vpn-geo doctor [--json] [--skip-network]  # 配置、D-Bus、GeoIP、源可达性综合检查
+vpn-geo doctor [--json] [--skip-network]
 vpn-geo speed [apply] [--direct] [--json]
 vpn-geo route [compare] [--direct] [--json]
 vpn-geo mirror list [-r cn|hk|jp|us|global] [--json]
@@ -31,22 +32,20 @@ vpn-geo mirror speed [-r jp] [--direct] [--json]
 vpn-geo mirror sync --regions cn,hk,jp,us --per-region 6 [--json] [--output FILE]
 vpn-geo mirror best [-r cn] [--yes] [--json]
 sudo vpn-geo mirror apply cn-tsinghua --yes
-vpn-geo -c /path/to/config.toml check
-vpn-geo -v doctor                    # 调试日志
 ```
 
-`mirror sync` 从 [Arch Linux 官方镜像状态](https://archlinux.org/mirrors/status/json/) 读取 active HTTPS 源，按 score/delay/completion 过滤并可按每地区数量导出 TOML 片段；`mirror best --yes` 会测速后应用得分最高的 pacman 源。普通 `mirror list/speed/sync/best` 不修改系统配置；`apply`/`best --yes` 需要 root 和显式确认。
+`mirror sync` 从 [Arch Linux 官方镜像状态](https://archlinux.org/mirrors/status/json/) 按 score/delay/completion 筛选 active HTTPS 源，并可以导出 `[[mirrors]]` TOML。`mirror best` 按吞吐/延迟综合评分选优；加 `--yes` 才写入 pacman mirrorlist。所有测速与诊断命令默认只读。
 
 ## 内置镜像目录
 
-内置 29 个 Arch Linux HTTPS 源：中国大陆 8、香港 3、日本 7、美国 10、全球 1。目录现在是 `crates/vpn-geo-core/src/config.rs` 中的一行一条 CSV 数据，新增源不再需要重复 Rust 构造代码。可用 `-r cn|hk|jp|us|global` 筛选，或用 `[[mirrors]]` 完全覆盖。
+内置 29 个 Arch Linux HTTPS 源：中国大陆 8、香港 3、日本 7、美国 10、全球 1。目录在 `crates/vpn-geo-domain/src/catalog.rs` 中以数据行维护，可按地区筛选或用 `[[mirrors]]` 完全覆盖。
 
 ## 配置
 
-1.x/2.x 配置可直接读取；推荐 3.x 显式指定：
+1.x/2.x/3.x 配置可直接读取；推荐 4.x 显式指定 `version = 4`：
 
 ```toml
-version = 3
+version = 4
 settle_delay = "3s"
 quiet_period = "500ms"
 
@@ -80,7 +79,7 @@ priority = 100
 enabled = true
 ```
 
-`min_agreement` 控制多 GeoIP 源的最低共识票数，默认 2，且不会超过源数量。状态文件只保存上次成功国家，不保存公网 IP。
+`min_agreement` 是 GeoIP 多源最低共识票数。状态文件只保存上次成功国家，不保存公网 IP。
 
 ## 构建与验证
 

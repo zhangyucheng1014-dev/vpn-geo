@@ -1,21 +1,19 @@
-# vpn-geo 3.0
+# vpn-geo 4.0
 
 [![CI](https://github.com/zhangyucheng1014-dev/vpn-geo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zhangyucheng1014-dev/vpn-geo/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/zhangyucheng1014-dev/vpn-geo?display_name=tag)](https://github.com/zhangyucheng1014-dev/vpn-geo/releases) [![License](https://img.shields.io/github/license/zhangyucheng1014-dev/vpn-geo)](LICENSE)
 
 [中文](README.md) | **English**
 
-`vpn-geo` has been fully rewritten again as a Cargo workspace: `vpn-geo-core` owns configuration, structured errors, D-Bus, GeoIP consensus, benchmarks, state, and mirror services; `vpn-geo-cli` owns clap parsing and human/JSON presentation.
+`vpn-geo` has been fully rewritten again as a four-layer Cargo workspace: `vpn-geo-domain` owns I/O-free rules, `vpn-geo-app` owns use cases and ports, `vpn-geo-infra` owns external adapters, and `vpn-geo-cli` owns parsing and rendering. Every system interaction is injected through `async_trait` ports, so domain behavior is independently testable. Existing 1.x/2.x/3.x configurations and commands remain compatible.
 
-All previous behavior remains: event-driven NetworkManager VPN disconnect handling, stable-route waiting, multi-source GeoIP, country-based autoconnect priority, state locking, `check`, `speed`, `status`, `route`, 29 regional mirror sources, JSON output, and safe pacman mirrorlist application. The daemon never connects, disconnects, or switches a VPN and changes only `connection.autoconnect-priority` for configured UUIDs.
+All previous capabilities remain: event-driven NetworkManager VPN disconnect handling, stable-route waiting, GeoIP consensus, country-based autoconnect priority, state locking, regional mirrors, official mirror synchronization, mirror scoring, safe pacman application, VPN/proxy/direct diagnostics, and JSON output. The daemon never connects, disconnects, or switches a VPN.
 
-## New in 3.0
+## Architecture
 
-- Split core/CLI crates with structured `thiserror` errors and typed exit codes.
-- clap command tree, including `doctor`, `mirror sync`, and `mirror best`.
-- Data-driven built-in mirror catalog covering CN (8), HK (3), JP (7), US (10), and Global (1).
-- Dynamic official mirror discovery from Arch Linux mirror status; results can be exported as `[[mirrors]]` TOML.
-- Benchmark scoring by throughput and latency; `mirror best --yes` measures and applies the best pacman source.
-- Configurable GeoIP `min_agreement`; existing 1.x/2.x configuration files remain valid.
+- `crates/vpn-geo-domain`: configuration, catalog, GeoIP consensus, scoring, route classification, disconnect state machine; no Tokio/D-Bus/HTTP dependency.
+- `crates/vpn-geo-app`: ports and use cases for `speed`, `route`, `doctor`, mirrors, and daemon scheduling.
+- `crates/vpn-geo-infra`: reqwest/rustls, zbus D-Bus, nmcli, flock state, official mirror status, mirrorlist, config repository adapters.
+- `crates/vpn-geo-cli`: clap commands, tables, JSON, logging, exit codes.
 
 ## Commands
 
@@ -34,7 +32,7 @@ vpn-geo mirror best [-r cn] [--yes] [--json]
 sudo vpn-geo mirror apply cn-tsinghua --yes
 ```
 
-`mirror sync` reads the [official Arch mirror status](https://archlinux.org/mirrors/status/json/) and filters active HTTPS sources by score, delay, and completeness. `mirror apply` and `mirror best --yes` write only a marked vpn-geo block, create a backup, and require root.
+`mirror sync` reads the [official Arch mirror status](https://archlinux.org/mirrors/status/json/) and exports generated `[[mirrors]]` entries. `mirror best` scores throughput and latency; only `--yes` writes the pacman mirrorlist. The built-in catalog has 29 HTTPS sources across CN (8), HK (3), JP (7), US (10), and Global (1).
 
 ## Build
 

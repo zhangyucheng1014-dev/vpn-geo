@@ -1,6 +1,6 @@
 # Contributing to vpn-geo
 
-The project is a Rust workspace with `vpn-geo-core` and `vpn-geo-cli`. Development requires Rust 1.85 or newer and, for daemon integration testing, Linux with NetworkManager.
+The project is a four-layer Rust workspace: `vpn-geo-domain`, `vpn-geo-app`, `vpn-geo-infra`, and `vpn-geo-cli`. Keep I/O out of the domain crate, put use cases and ports in the app crate, and implement external systems only in the infra crate. Development requires Rust 1.85 or newer and, for daemon integration testing, Linux with NetworkManager.
 
 Run the same checks used by CI:
 

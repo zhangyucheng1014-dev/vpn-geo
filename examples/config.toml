@@ -1,5 +1,5 @@
-# vpn-geo 3.x example configuration. Legacy 1.x/2.x files remain valid.
-version = 3
+# vpn-geo 4.x example configuration. Legacy 1.x/2.x/3.x files remain valid.
+version = 4
 settle_delay = "3s"
 quiet_period = "500ms"
 

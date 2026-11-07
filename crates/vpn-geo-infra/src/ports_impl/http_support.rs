@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use reqwest::{Client, ClientBuilder};
+use vpn_geo_app::{AppError, AppResult};
+use vpn_geo_domain::VERSION;
 
-use crate::{Error, Result, VERSION};
-
-pub fn client(timeout: Duration, direct: bool) -> Result<Client> {
+pub fn client(timeout: Duration, direct: bool) -> AppResult<Client> {
     let mut builder = ClientBuilder::new()
         .timeout(timeout)
         .connect_timeout(timeout.min(Duration::from_secs(5)))
@@ -16,5 +16,5 @@ pub fn client(timeout: Duration, direct: bool) -> Result<Client> {
     }
     builder
         .build()
-        .map_err(|error| Error::http(format!("create HTTP client: {error}")))
+        .map_err(|error| AppError::http(format!("create HTTP client: {error}")))
 }

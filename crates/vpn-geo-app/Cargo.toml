@@ -1,0 +1,16 @@
+[package]
+name = "vpn-geo-app"
+description = "Application use cases and ports for vpn-geo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+futures-util.workspace = true
+log.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+vpn-geo-domain.workspace = true
