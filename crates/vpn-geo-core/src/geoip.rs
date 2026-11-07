@@ -1,10 +1,10 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::{config::Config, http};
+use crate::{Config, Error, Result, config::valid_country, http};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct Location {
     pub country_code: String,
     pub latitude: f64,
@@ -35,22 +35,19 @@ struct GenericResponse {
     message: Option<String>,
 }
 
-pub async fn locate(config: &Config, direct: bool) -> Result<Location, String> {
+pub async fn locate(config: &Config, direct: bool) -> Result<Location> {
     let client = http::client(config.geoip.timeout, direct)?;
-    let responses = futures_util::future::join_all(
-        config
-            .geoip
-            .urls
-            .iter()
-            .cloned()
-            .map(|url| fetch_one(client.clone(), url, config.geoip.timeout)),
-    )
-    .await;
-
-    let mut votes: BTreeMap<String, Vec<Location>> = BTreeMap::new();
+    let requests = config
+        .geoip
+        .urls
+        .iter()
+        .cloned()
+        .map(|url| fetch_one(client.clone(), url, config.geoip.timeout));
+    let responses = futures_util::future::join_all(requests).await;
     let mut errors = Vec::new();
-    for (index, result) in responses.into_iter().enumerate() {
-        match result {
+    let mut votes: BTreeMap<String, Vec<Location>> = BTreeMap::new();
+    for (index, response) in responses.into_iter().enumerate() {
+        match response {
             Ok(location) => votes
                 .entry(location.country_code.clone())
                 .or_default()
@@ -59,7 +56,10 @@ pub async fn locate(config: &Config, direct: bool) -> Result<Location, String> {
         }
     }
     if votes.is_empty() {
-        return Err(format!("all GeoIP sources failed: {}", errors.join("; ")));
+        return Err(Error::http(format!(
+            "all GeoIP sources failed: {}",
+            errors.join("; ")
+        )));
     }
     let (_, mut group) = votes
         .into_iter()
@@ -69,41 +69,47 @@ pub async fn locate(config: &Config, direct: bool) -> Result<Location, String> {
                 .then_with(|| left[0].source.cmp(&right[0].source))
                 .then_with(|| right_country.cmp(left_country))
         })
-        .expect("votes are non-empty");
+        .ok_or_else(|| Error::http("no GeoIP consensus"))?;
     group.sort_by(|left, right| left.source.cmp(&right.source));
+    let agreement = group.len();
+    if agreement < config.geoip.min_agreement {
+        return Err(Error::http(format!(
+            "GeoIP consensus is too weak: {agreement} < {}",
+            config.geoip.min_agreement
+        )));
+    }
     let best = group.remove(0);
-    Ok(Location {
-        agreement: group.len() + 1,
-        ..best
-    })
+    Ok(Location { agreement, ..best })
 }
 
 async fn fetch_one(
     client: reqwest::Client,
     url: String,
-    timeout: Duration,
-) -> Result<Location, String> {
-    let response = tokio::time::timeout(timeout, client.get(&url).send())
+    timeout: std::time::Duration,
+) -> Result<Location> {
+    let response = client
+        .get(&url)
+        .timeout(timeout)
+        .send()
         .await
-        .map_err(|_| "request timed out".to_owned())?
-        .map_err(|error| format!("request failed: {error}"))?;
+        .map_err(|error| Error::http(format!("request failed: {error}")))?;
     if !response.status().is_success() {
-        return Err(format!("HTTP status {}", response.status()));
+        return Err(Error::http(format!("HTTP status {}", response.status())));
     }
-    let bytes = tokio::time::timeout(timeout, response.bytes())
+    let bytes = response
+        .bytes()
         .await
-        .map_err(|_| "response timed out".to_owned())?
-        .map_err(|error| format!("read response: {error}"))?;
+        .map_err(|error| Error::http(format!("read response: {error}")))?;
     if bytes.len() > 1024 * 1024 {
-        return Err("response is unexpectedly large".to_owned());
+        return Err(Error::http("response is unexpectedly large"));
     }
-    let parsed: GenericResponse =
-        serde_json::from_slice(&bytes).map_err(|error| format!("decode JSON response: {error}"))?;
+    let parsed: GenericResponse = serde_json::from_slice(&bytes)
+        .map_err(|error| Error::http(format!("decode JSON response: {error}")))?;
     if parsed.success == Some(false) || parsed.status.as_deref() == Some("fail") {
-        return Err(format!(
+        return Err(Error::http(format!(
             "API reported failure: {}",
             parsed.message.unwrap_or_default()
-        ));
+        )));
     }
     let country = parsed
         .country_code
@@ -111,8 +117,10 @@ async fn fetch_one(
         .unwrap_or_default()
         .trim()
         .to_ascii_uppercase();
-    if !crate::config::valid_country(&country) {
-        return Err(format!("API returned invalid country code {country:?}"));
+    if !valid_country(&country) {
+        return Err(Error::http(format!(
+            "API returned invalid country code {country:?}"
+        )));
     }
     let latitude = parsed.latitude.or(parsed.lat).unwrap_or(0.0);
     let longitude = parsed.longitude.or(parsed.lon).unwrap_or(0.0);
@@ -121,7 +129,7 @@ async fn fetch_one(
         || !longitude.is_finite()
         || !(-180.0..=180.0).contains(&longitude)
     {
-        return Err("API returned invalid coordinates".to_owned());
+        return Err(Error::http("API returned invalid coordinates"));
     }
     Ok(Location {
         country_code: country,

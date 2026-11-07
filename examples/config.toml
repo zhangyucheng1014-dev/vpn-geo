@@ -1,4 +1,5 @@
-# vpn-geo 2.x example configuration. Legacy 1.x files remain valid.
+# vpn-geo 3.x example configuration. Legacy 1.x/2.x files remain valid.
+version = 3
 settle_delay = "3s"
 quiet_period = "500ms"
 
@@ -11,6 +12,7 @@ urls = [
   "https://ip-api.com/json/?fields=status,countryCode,lat,lon,message",
 ]
 timeout = "10s"
+min_agreement = 2
 
 [benchmark]
 candidate_countries = 3

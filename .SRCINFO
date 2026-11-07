@@ -1,6 +1,6 @@
 pkgbase = vpn-geo
-	pkgdesc = Event-driven NetworkManager VPN prioritizer, route diagnostics and mirror manager
-	pkgver = 2.0.0
+	pkgdesc = Workspace-based NetworkManager VPN prioritizer, diagnostics and regional mirror manager
+	pkgver = 3.0.0
 	pkgrel = 1
 	url = https://github.com/zhangyucheng1014-dev/vpn-geo
 	arch = x86_64
@@ -11,7 +11,7 @@ pkgbase = vpn-geo
 	makedepends = cargo
 	depends = networkmanager
 	depends = ca-certificates
-	source = vpn-geo-2.0.0.tar.gz::https://github.com/zhangyucheng1014-dev/vpn-geo/archive/refs/tags/v2.0.0.tar.gz
+	source = vpn-geo-3.0.0.tar.gz::https://github.com/zhangyucheng1014-dev/vpn-geo/archive/refs/tags/v3.0.0.tar.gz
 	sha256sums = SKIP
 
 pkgname = vpn-geo

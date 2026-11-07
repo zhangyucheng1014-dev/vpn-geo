@@ -1,8 +1,8 @@
 # Maintainer: zhangyucheng1014-dev <zhangyucheng1014-dev@users.noreply.github.com>
 pkgname=vpn-geo
-pkgver=2.0.0
+pkgver=3.0.0
 pkgrel=1
-pkgdesc='Event-driven NetworkManager VPN prioritizer, route diagnostics and mirror manager'
+pkgdesc='Workspace-based NetworkManager VPN prioritizer, diagnostics and regional mirror manager'
 arch=('x86_64' 'aarch64' 'armv7h')
 url='https://github.com/zhangyucheng1014-dev/vpn-geo'
 license=('MIT')
@@ -14,12 +14,12 @@ sha256sums=('SKIP')
 build() {
   cd "${pkgname}-${pkgver}"
   export CARGO_TARGET_DIR=target
-  cargo build --frozen --release --target-dir target
+  cargo build --frozen --release --workspace --target-dir target
 }
 
 check() {
   cd "${pkgname}-${pkgver}"
-  cargo test --frozen --all-targets
+  cargo test --frozen --workspace --all-targets
 }
 
 package() {

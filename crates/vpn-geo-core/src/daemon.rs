@@ -1,31 +1,33 @@
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use futures_util::StreamExt;
 use log::{debug, info, warn};
-use tokio::sync::{mpsc, Mutex as AsyncMutex};
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use zbus::Connection;
 
-use crate::{config::Config, geoip, network, priority, state};
+use crate::{Config, Error, Result, geoip, network, priority, state};
 
 const SIGNAL_DEBOUNCE: Duration = Duration::from_millis(100);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(3);
 const QUIET_DEADLINE: Duration = Duration::from_secs(10);
 
-pub async fn run(config: Arc<Config>) -> Result<(), String> {
+pub async fn run(config: Arc<Config>) -> Result<()> {
     let connection = Connection::system()
         .await
-        .map_err(|error| format!("connect system D-Bus: {error}"))?;
+        .map_err(|error| Error::nm(format!("connect system D-Bus: {error}")))?;
     let mut signals = network::signal_stream(&connection).await?;
+    let (refresh_tx, mut refresh_rx) = mpsc::channel::<()>(1);
+    let signal_debounce = Arc::new(AsyncMutex::new(None::<tokio::time::Instant>));
     let vpn_active = Arc::new(AtomicBool::new(
         tokio::time::timeout(SNAPSHOT_TIMEOUT, network::snapshot_vpn(&connection))
             .await
-            .map_err(|_| "read initial VPN state timed out".to_owned())??,
+            .map_err(|_| Error::Timeout("read initial VPN state".to_owned()))??,
     ));
     let last_signal = Arc::new(AsyncMutex::new(Instant::now()));
     let handler = Arc::new(Handler::new(config.clone()));
@@ -34,18 +36,15 @@ pub async fn run(config: Arc<Config>) -> Result<(), String> {
         vpn_active.load(Ordering::Relaxed)
     );
 
-    let signal_debounce = Arc::new(AsyncMutex::new(None::<tokio::time::Instant>));
-    let (refresh_tx, mut refresh_rx) = mpsc::channel::<()>(1);
     let mut processor: Option<tokio::task::JoinHandle<()>> = None;
-    let shutdown = crate::shutdown_signal();
+    let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
-
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
             signal = signals.next() => {
                 let Some(signal) = signal else {
-                    return Err("system D-Bus event stream closed".to_owned());
+                    return Err(Error::nm("system D-Bus event stream closed"));
                 };
                 let message = match signal {
                     Ok(message) => message,
@@ -68,53 +67,33 @@ pub async fn run(config: Arc<Config>) -> Result<(), String> {
             }
             _ = refresh_rx.recv() => {
                 loop {
-                    let deadline = { *signal_debounce.lock().await };
+                    let deadline = *signal_debounce.lock().await;
                     let Some(deadline) = deadline else { break };
-                    let now = tokio::time::Instant::now();
-                    if now >= deadline {
+                    if tokio::time::Instant::now() >= deadline {
                         *signal_debounce.lock().await = None;
                         break;
                     }
                     tokio::time::sleep_until(deadline).await;
                 }
                 let previous = vpn_active.load(Ordering::Relaxed);
-                let active = match tokio::time::timeout(
-                    SNAPSHOT_TIMEOUT,
-                    network::snapshot_vpn(&connection),
-                ).await {
+                let active = match tokio::time::timeout(SNAPSHOT_TIMEOUT, network::snapshot_vpn(&connection)).await {
                     Ok(Ok(active)) => active,
-                    Ok(Err(error)) => {
-                        warn!("could not inspect VPN state: {error}");
-                        continue;
-                    }
-                    Err(_) => {
-                        warn!("could not inspect VPN state: timed out");
-                        continue;
-                    }
+                    Ok(Err(error)) => { warn!("could not inspect VPN state: {error}"); continue; }
+                    Err(_) => { warn!("could not inspect VPN state: timed out"); continue; }
                 };
                 vpn_active.store(active, Ordering::Relaxed);
                 if previous && !active {
-                    if let Some(task) = processor.take() {
-                        task.abort();
-                    }
+                    if let Some(task) = processor.take() { task.abort(); }
                     let handler = handler.clone();
                     let state = vpn_active.clone();
                     let last_signal = last_signal.clone();
-                    let quiet_period = config.quiet_period;
                     let settle_delay = config.settle_delay;
+                    let quiet_period = config.quiet_period;
                     processor = Some(tokio::spawn(async move {
-                        after_disconnect(
-                            handler,
-                            state,
-                            last_signal,
-                            settle_delay,
-                            quiet_period,
-                        ).await;
+                        after_disconnect(handler, state, last_signal, settle_delay, quiet_period).await;
                     }));
                 } else if !previous && active {
-                    if let Some(task) = processor.take() {
-                        task.abort();
-                    }
+                    if let Some(task) = processor.take() { task.abort(); }
                 }
             }
         }
@@ -219,26 +198,24 @@ async fn after_disconnect(
             warn!("network did not become quiet after VPN disconnect; skipping lookup");
             return;
         }
-        let wait = (quiet_period - quiet_for)
-            .min(Duration::from_millis(100))
-            .min(remaining);
-        tokio::time::sleep(wait).await;
+        tokio::time::sleep(
+            (quiet_period - quiet_for)
+                .min(Duration::from_millis(100))
+                .min(remaining),
+        )
+        .await;
     }
-    if vpn_active.load(Ordering::Relaxed) {
-        return;
+    if !vpn_active.load(Ordering::Relaxed) {
+        handler.process().await;
     }
-    handler.process().await;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn quiet_wait_never_exceeds_deadline() {
-        let wait = Duration::from_millis(500)
-            .min(Duration::from_millis(100))
-            .min(Duration::from_millis(40));
-        assert_eq!(wait, Duration::from_millis(40));
+pub async fn shutdown_signal() {
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
     }
+    debug!("shutdown requested");
 }

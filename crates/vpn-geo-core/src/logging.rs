@@ -29,13 +29,11 @@ impl Log for Logger {
 }
 
 pub fn init(verbose: bool) {
-    MIN_LEVEL
-        .set(if verbose {
-            LevelFilter::Debug
-        } else {
-            LevelFilter::Info
-        })
-        .ok();
-    log::set_logger(&Logger).ok();
+    let _ = MIN_LEVEL.set(if verbose {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    });
+    let _ = log::set_logger(&Logger);
     log::set_max_level(LevelFilter::Trace);
 }

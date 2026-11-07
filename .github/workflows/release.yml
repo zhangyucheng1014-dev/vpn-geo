@@ -32,7 +32,7 @@ jobs:
         run: |
           set -eu
           cargo install cross --git https://github.com/cross-rs/cross --locked
-          cross build --locked --release --target "$TARGET"
+          cross build --locked --release --workspace --target "$TARGET" --bin vpn-geo
           archive="vpn-geo_${VERSION#v}_linux_${ARCHIVE_ARCH}"
           mkdir -p "dist/$archive"
           install -m 0755 "target/$TARGET/release/vpn-geo" "dist/$archive/vpn-geo"

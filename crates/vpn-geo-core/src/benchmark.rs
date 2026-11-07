@@ -3,15 +3,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures_util::{stream, StreamExt};
+use futures_util::{StreamExt, stream};
 use serde::Serialize;
 use tokio::sync::Semaphore;
 
-use crate::{
-    config::{Config, Mirror, MirrorRegion, Node},
-    geoip::Location,
-    http,
-};
+use crate::{Config, Error, Result, config::Node, geoip::Location, http};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Options {
@@ -22,20 +18,36 @@ pub struct Options {
     pub direct: bool,
 }
 
+impl Options {
+    pub fn from_config(config: &Config, direct: bool) -> Self {
+        Self {
+            samples: config.benchmark.samples,
+            timeout: config.benchmark.request_timeout,
+            download_bytes: config.benchmark.download_bytes,
+            parallel: config.benchmark.parallel,
+            direct,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct SpeedResult {
     pub label: String,
     pub url: String,
     pub distance_km: Option<f64>,
-    pub latency: Option<Duration>,
+    pub latency_ms: Option<f64>,
     pub bytes: u64,
-    pub throughput: f64,
+    pub mbps: f64,
     pub error: Option<String>,
 }
 
 impl SpeedResult {
-    pub fn mbps(&self) -> f64 {
-        self.throughput * 8.0 / 1_000_000.0
+    pub fn score(&self) -> f64 {
+        if self.error.is_some() {
+            return f64::NEG_INFINITY;
+        }
+        let latency = self.latency_ms.unwrap_or(1000.0).max(1.0);
+        self.mbps / latency.ln_1p()
     }
 }
 
@@ -64,38 +76,15 @@ pub fn nearest(nodes: &[Node], location: &Location, count: usize) -> Vec<(Node, 
         .collect()
 }
 
-pub fn mirror_results(config: &Config, region: Option<MirrorRegion>) -> Vec<Mirror> {
-    let mut mirrors: Vec<Mirror> = config
-        .mirrors
-        .iter()
-        .filter(|mirror| mirror.enabled)
-        .cloned()
-        .collect();
-    if mirrors.is_empty() {
-        mirrors = crate::config::default_mirrors();
-    }
-    if let Some(region) = region {
-        mirrors.retain(|mirror| mirror.region == region);
-    }
-    mirrors.sort_by(|left, right| {
-        right
-            .priority
-            .cmp(&left.priority)
-            .then_with(|| left.name.cmp(&right.name))
-    });
-    mirrors
-}
-
 pub async fn run(
-    _config: &Config,
     targets: Vec<(String, String, Option<f64>)>,
     options: Options,
-) -> std::result::Result<Vec<SpeedResult>, String> {
+) -> Result<Vec<SpeedResult>> {
     let client = http::client(options.timeout, options.direct)?;
     let semaphore = Arc::new(Semaphore::new(options.parallel));
     let options = Arc::new(options);
-    let results = stream::iter(targets.into_iter().enumerate())
-        .map(|(_index, (label, url, distance_km))| {
+    let collected = stream::iter(targets)
+        .map(|(label, url, distance_km)| {
             let client = client.clone();
             let semaphore = semaphore.clone();
             let options = options.clone();
@@ -103,55 +92,47 @@ pub async fn run(
                 let _permit = semaphore
                     .acquire()
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| Error::Internal(error.to_string()))?;
                 let mut result = SpeedResult {
                     label,
-                    url,
+                    url: url.clone(),
                     distance_km,
-                    latency: None,
+                    latency_ms: None,
                     bytes: 0,
-                    throughput: 0.0,
+                    mbps: 0.0,
                     error: None,
                 };
-                match measure(&client, &result.url, &options).await {
+                match measure(&client, &url, &options).await {
                     Ok(measurement) => {
-                        result.latency = measurement.latency;
+                        result.latency_ms = measurement.latency_ms;
                         result.bytes = measurement.bytes;
-                        result.throughput = measurement.throughput;
+                        result.mbps = measurement.mbps;
                     }
-                    Err(error) => result.error = Some(error),
+                    Err(error) => result.error = Some(error.to_string()),
                 }
-                Ok::<_, String>(result)
+                Ok::<_, Error>(result)
             }
         })
         .buffer_unordered(options.parallel.max(1))
-        .collect::<Vec<std::result::Result<SpeedResult, String>>>()
+        .collect::<Vec<Result<SpeedResult>>>()
         .await;
-    let mut results = results
-        .into_iter()
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut results = collected.into_iter().collect::<Result<Vec<_>>>()?;
     results.sort_by(|left, right| {
         right
-            .error
-            .is_none()
-            .cmp(&left.error.is_none())
-            .then_with(|| right.throughput.total_cmp(&left.throughput))
+            .score()
+            .total_cmp(&left.score())
             .then_with(|| left.label.cmp(&right.label))
     });
     Ok(results)
 }
 
 struct Measurement {
-    latency: Option<Duration>,
+    latency_ms: Option<f64>,
     bytes: u64,
-    throughput: f64,
+    mbps: f64,
 }
 
-async fn measure(
-    client: &reqwest::Client,
-    url: &str,
-    options: &Options,
-) -> std::result::Result<Measurement, String> {
+async fn measure(client: &reqwest::Client, url: &str, options: &Options) -> Result<Measurement> {
     let mut total_bytes = 0u64;
     let mut total_duration = Duration::ZERO;
     let mut first_latency = None;
@@ -165,39 +146,38 @@ async fn measure(
             .send();
         let mut response = tokio::time::timeout(options.timeout, request)
             .await
-            .map_err(|_| "request timed out".to_owned())?
-            .map_err(|error| format!("request failed: {error}"))?;
+            .map_err(|_| Error::Timeout("request".to_owned()))?
+            .map_err(|error| Error::http(format!("request failed: {error}")))?;
         if !response.status().is_success() {
-            return Err(format!("HTTP status {}", response.status()));
+            return Err(Error::http(format!("HTTP status {}", response.status())));
         }
-        let latency = start.elapsed();
+        let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
         if first_latency.is_none() {
-            first_latency = Some(latency);
+            first_latency = Some(latency_ms);
         }
         let mut sample_bytes = 0u64;
         while sample_bytes < options.download_bytes {
             let chunk = tokio::time::timeout(options.timeout, response.chunk())
                 .await
-                .map_err(|_| "download timed out".to_owned())?
-                .map_err(|error| format!("read response: {error}"))?;
+                .map_err(|_| Error::Timeout("download".to_owned()))?
+                .map_err(|error| Error::http(format!("read response: {error}")))?;
             let Some(chunk) = chunk else { break };
             sample_bytes += (chunk.len() as u64).min(options.download_bytes - sample_bytes);
         }
         if sample_bytes == 0 {
-            return Err("empty response".to_owned());
+            return Err(Error::http("empty response"));
         }
         total_bytes += sample_bytes;
         total_duration += start.elapsed();
     }
-    let throughput = if total_duration.is_zero() {
-        0.0
-    } else {
-        total_bytes as f64 / total_duration.as_secs_f64()
-    };
     Ok(Measurement {
-        latency: first_latency,
+        latency_ms: first_latency,
         bytes: total_bytes,
-        throughput,
+        mbps: if total_duration.is_zero() {
+            0.0
+        } else {
+            total_bytes as f64 * 8.0 / 1_000_000.0 / total_duration.as_secs_f64()
+        },
     })
 }
 
@@ -223,11 +203,11 @@ pub fn print_table(results: &[SpeedResult], show_distance: bool) {
     }
     for result in results {
         let latency = result
-            .latency
-            .map(|value| format!("{:.1} ms", value.as_secs_f64() * 1000.0))
+            .latency_ms
+            .map(|value| format!("{value:.1} ms"))
             .unwrap_or_else(|| "-".to_owned());
         let throughput = if result.error.is_none() {
-            format!("{:.2} Mbps", result.mbps())
+            format!("{:.2} Mbps", result.mbps)
         } else {
             "-".to_owned()
         };

@@ -1,109 +1,96 @@
-# vpn-geo 2.0：Rust 重写的 VPN 节点优先级与网络诊断工具
+# vpn-geo 3.0：全量重构的 Rust Workspace
 
 [![CI](https://github.com/zhangyucheng1014-dev/vpn-geo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zhangyucheng1014-dev/vpn-geo/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/zhangyucheng1014-dev/vpn-geo?display_name=tag)](https://github.com/zhangyucheng1014-dev/vpn-geo/releases) [![License](https://img.shields.io/github/license/zhangyucheng1014-dev/vpn-geo)](LICENSE) [![Rust](https://img.shields.io/badge/Rust-1.85%2B-dea584?logo=rust&logoColor=white)](Cargo.toml)
 
 **中文** | [English](README.en.md)
 
-`vpn-geo` 原来是 Go 1.24 项目，现已完整重写为 Rust（Tokio + `zbus` + `reqwest` + rustls）。旧版所有核心能力都保留：NetworkManager VPN 断开后按公网 IP 国家调整节点自动连接优先级、`check`、节点 `speed`/`speed apply`、状态文件、事件去抖和只改优先级的边界。
+`vpn-geo` 已完成第三次全量重写：从单 crate Rust 程序重构为 `vpn-geo-core` + `vpn-geo-cli` 的 Cargo workspace。核心领域逻辑、配置模型、服务层和命令行输出彻底分离；错误处理改为结构化 `thiserror`，CLI 改用 `clap`，镜像目录改为数据驱动，并支持从 Arch Linux 官方镜像状态动态生成候选源。
 
-2.0 新增：多 GeoIP 源并发共识、更多 pacman/通用镜像源、镜像测速与安全切换、当前线路 / 直连基准测速、设备当前是 VPN / 系统代理 / 直连的状态检测，以及关键命令的 JSON 输出。
+原有能力全部保留：NetworkManager VPN 断开事件、路由稳定等待、多 GeoIP 源、国家节点优先级、状态锁、`check`/`speed`/`speed apply`/`status`/`route`/`mirror`/`sources`、区域镜像源、JSON 输出、pacman 安全切换。程序仍然不会主动连接、断开或切换 VPN，也只修改配置中明确列出的 UUID 的 `connection.autoconnect-priority`。
 
-## 普通用户如何使用
+## 3.0 架构
 
-```bash
-nmcli -f NAME,UUID,TYPE connection show
-mkdir -p ~/.config/vpn-geo
-cp examples/config.toml ~/.config/vpn-geo/config.toml
-$EDITOR ~/.config/vpn-geo/config.toml
-vpn-geo check
-systemctl --user enable --now vpn-geo.service
-```
-
-后台服务仍然是事件驱动：空闲时不轮询 NetworkManager、不运行 `nmcli`、不请求公网服务。只有「最后一个活动 VPN 从连接变为断开」才会等待路由稳定、查询公网 IP 国家并调整优先级。程序不会主动连接、断开或切换 VPN，也不会读写 VPN 密码、密钥、服务器地址、路由或 DNS。
+- `crates/vpn-geo-core`：配置、错误、HTTP、GeoIP 共识、NetworkManager D-Bus、守护状态机、测速、镜像目录、pacman 写入。
+- `crates/vpn-geo-cli`：clap 命令解析、表格/JSON 输出、退出码和脚本接口。
+- `Cargo.toml`：workspace 统一版本、依赖与 release profile；`vpn-geo-core` 在发布构建中使用更高优化级别。
+- 结构化错误区分配置错误（退出码 2）、未找到（3）和运行时错误（1）。
+- 测速结果包含 `latency_ms`、`mbps` 和综合评分；`mirror best` 会按吞吐/延迟评分选择最佳源。
 
 ## 命令
 
 ```bash
-vpn-geo                         # 启动后台监听；daemon 是显式别名
-vpn-geo check [--json]          # 校验配置
-vpn-geo status [--json]         # 查看当前 VPN、系统代理、设备与线路判断
-vpn-geo sources [--json]        # 列出 GeoIP 源
-vpn-geo speed                   # 就近节点测速（只读）
-vpn-geo speed apply             # 测速并提升最快节点的自动连接优先级
-vpn-geo speed --direct          # GeoIP 查询绕过 HTTP 代理设置
-vpn-geo route                   # 测当前线路延迟/吞吐，并显示线路状态
-vpn-geo route compare           # 额外测一个 no-proxy 直连基准
-vpn-geo mirror list             # 列出内置/自定义的 pacman 与通用源
-vpn-geo mirror list -r cn       # 只看中国大陆源；另有 hk/jp/us/global
-vpn-geo mirror speed            # 镜像源测速（只读）
-vpn-geo mirror speed -r jp      # 只测日本源
-vpn-geo mirror speed --direct   # 绕过系统代理测镜像源
-sudo vpn-geo mirror apply tsinghua --yes   # 应用 pacman 源（需要 root）
+vpn-geo                              # 后台事件监听；daemon 为显式别名
+vpn-geo check [--json]               # 校验配置
+vpn-geo status [--json] [--no-dbus]  # VPN / 系统代理 / 设备 / 线路状态
+vpn-geo sources [--json]             # GeoIP 源、超时和最小共识数
+vpn-geo doctor [--json] [--skip-network]  # 配置、D-Bus、GeoIP、源可达性综合检查
+vpn-geo speed [apply] [--direct] [--json]
+vpn-geo route [compare] [--direct] [--json]
+vpn-geo mirror list [-r cn|hk|jp|us|global] [--json]
+vpn-geo mirror speed [-r jp] [--direct] [--json]
+vpn-geo mirror sync --regions cn,hk,jp,us --per-region 6 [--json] [--output FILE]
+vpn-geo mirror best [-r cn] [--yes] [--json]
+sudo vpn-geo mirror apply cn-tsinghua --yes
 vpn-geo -c /path/to/config.toml check
-vpn-geo -v status               # 调试日志
+vpn-geo -v doctor                    # 调试日志
 ```
 
-`speed`、`route`、`mirror speed`、`status`、`check` 支持 `--json`，方便脚本处理。旧版 `speed --apply` 和 `-c`、`-v` 均兼容。
+`mirror sync` 从 [Arch Linux 官方镜像状态](https://archlinux.org/mirrors/status/json/) 读取 active HTTPS 源，按 score/delay/completion 过滤并可按每地区数量导出 TOML 片段；`mirror best --yes` 会测速后应用得分最高的 pacman 源。普通 `mirror list/speed/sync/best` 不修改系统配置；`apply`/`best --yes` 需要 root 和显式确认。
 
-## 新特性说明
+## 内置镜像目录
 
-### 多 GeoIP 源与更多源
+内置 29 个 Arch Linux HTTPS 源：中国大陆 8、香港 3、日本 7、美国 10、全球 1。目录现在是 `crates/vpn-geo-core/src/config.rs` 中的一行一条 CSV 数据，新增源不再需要重复 Rust 构造代码。可用 `-r cn|hk|jp|us|global` 筛选，或用 `[[mirrors]]` 完全覆盖。
 
-默认并发查询 `ipwho.is`、`ipapi.co`、`ip-api.com` 三个兼容 JSON 格式的服务，采用多数票共识；单个源失败不会中断处理。可在 `[geoip]` 中用 `urls = [...]` 自定义最多 8 个源，也可以使用旧版 `url = "..."`。查询响应限制为 1 MiB，禁止保留空闲连接，超时和异常响应不会修改任何节点或状态。
+## 配置
 
-`mirror` 内置 29 个按地区整理的 Arch Linux HTTPS 源：中国大陆 8 个、香港 3 个、日本 7 个、美国 10 个、全球 1 个。候选来自 Arch Linux 官方镜像状态，优先选择 active、近期同步、完整度高的源，并验证 `core.db.tar.gz` 可访问；会过滤掉当前环境下不可测速的 RsProxy、返回 403 的 Xtom 和下载不稳定的 Wtako。可用 `mirror list -r cn|hk|jp|us|global` 或 `mirror speed -r jp` 按地区筛选。也支持配置任意数量的 `[[mirrors]]`：
+1.x/2.x 配置可直接读取；推荐 3.x 显式指定：
 
 ```toml
+version = 3
+settle_delay = "3s"
+quiet_period = "500ms"
+
+[geoip]
+urls = ["https://ipwho.is/", "https://ipapi.co/json/", "https://ip-api.com/json/?fields=status,countryCode,lat,lon,message"]
+timeout = "10s"
+min_agreement = 2
+
+[benchmark]
+candidate_countries = 3
+samples = 3
+request_timeout = "8s"
+download_bytes = 10485760
+parallel = 2
+
+[[nodes]]
+name = "jp-tokyo-1"
+uuid = "REPLACE-WITH-NETWORKMANAGER-PROFILE-UUID"
+country = "JP"
+latitude = 35.6762
+longitude = 139.6503
+test_url = "https://replace-with-your-test-host.example/test-10MiB.bin"
+
 [[mirrors]]
 name = "my-mirror"
-kind = "pacman"            # 或 generic
-region = "cn"              # cn/hk/jp/us/global；省略则为 global
+kind = "pacman"
+region = "cn"
 url = "https://example.test/archlinux/$repo/os/$arch"
 test_url = "https://example.test/archlinux/core/os/x86_64/core.db.tar.gz"
 priority = 100
 enabled = true
 ```
 
-`mirror apply` 只修改 `/etc/pacman.d/mirrorlist` 中明确标记的 `# BEGIN/END vpn-geo managed mirrors` 区块，会先创建带时间戳的备份，再执行 `pacman -Syy`。必须显式加 `--yes`；普通 `mirror speed` 完全只读。需要 root 权限，且只对 `kind = "pacman"` 的源生效。
+`min_agreement` 控制多 GeoIP 源的最低共识票数，默认 2，且不会超过源数量。状态文件只保存上次成功国家，不保存公网 IP。
 
-### 走 VPN / 直连测速与设备状态
-
-`status` 通过 NetworkManager 系统 D-Bus 读取活动连接与 VPN 标志，结合代理环境变量和 GNOME 代理设置，输出 `VPN`、`System proxy`、`Direct` 或组合判断。`route` 测当前线路的延迟和吞吐，`route compare` 额外用 `no_proxy()` 客户端测直连基准；它不会替用户切换 VPN。
-
-注意：HTTP/SOCKS 代理客户端或第三方 tun 模式可能绕过 NetworkManager，因此状态检测带 `confidence` 字段；`Direct` 表示「未检测到 VPN 或系统代理」，不等同于内核路由表的绝对证明。测速得到的是当前出口到测试 URL 的结果，不是逐个连接 VPN 后的真实隧道速度。
-
-## 性能与实现
-
-- Rust 单静态逻辑二进制，release 使用 `opt-level = "z"`、LTO、单 codegen unit、strip 和 `panic = "abort"`。
-- 使用 Tokio 单线程 runtime；空闲时只等待系统 D-Bus 信号，不保持 HTTP 空闲连接。
-- `zbus` 原生 D-Bus，避免每次状态变化启动额外进程；Geolocation 多源并发、节点优先级读取并发、测速受 `parallel` 信号量限制。
-- 请求体限制、下载字节上限、样本数/并发数上限和超时共同防止异常源拖垮后台服务。
-- systemd user service 的内存上限从 128 MiB 收紧到 96 MiB，CPU/IO 权重保持低优先级。
-
-## 配置与安装
-
-- 配置：`$XDG_CONFIG_HOME/vpn-geo/config.toml` 或 `~/.config/vpn-geo/config.toml`
-- 状态：`$XDG_STATE_HOME/vpn-geo/` 或 `~/.local/state/vpn-geo/`（只保存上次成功国家，不保存公网 IP）
-- 服务：`~/.config/systemd/user/vpn-geo.service` 或软件包提供的 `/usr/lib/systemd/user/vpn-geo.service`
-
-Arch Linux 可直接使用 `PKGBUILD`：
+## 构建与验证
 
 ```bash
-makepkg -si
-systemctl --user daemon-reload
-systemctl --user enable --now vpn-geo.service
+cargo fmt --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --all-targets
+cargo build --locked --workspace --release
 ```
 
-源码构建：
-
-```bash
-cargo test --locked --all-targets
-cargo clippy --locked --all-targets -- -D warnings
-cargo build --locked --release
-```
-
-## 兼容性
-
-1.x 的 `settle_delay`、`quiet_period`、`[geoip] url/timeout`、`[benchmark]` 和 `[[nodes]] name/uuid/country/latitude/longitude/test_url` 全部保留；新增 `[geoip] urls`、`[[mirrors]]` 和新命令是可选能力。状态文件 schema v1 继续可读。未知配置键、重复 UUID/源名、非法国家代码、URL、坐标和测速参数仍会在 `check` 阶段直接失败。
+Arch Linux 可使用 `PKGBUILD`：`makepkg -si`，随后 `systemctl --user enable --now vpn-geo.service`。
 
 项目使用 [MIT License](LICENSE)。
