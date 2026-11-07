@@ -8,7 +8,7 @@ use serde::Serialize;
 use tokio::sync::Semaphore;
 
 use crate::{
-    config::{Config, Mirror, Node},
+    config::{Config, Mirror, MirrorRegion, Node},
     geoip::Location,
     http,
 };
@@ -64,7 +64,7 @@ pub fn nearest(nodes: &[Node], location: &Location, count: usize) -> Vec<(Node, 
         .collect()
 }
 
-pub fn mirror_results(config: &Config) -> Vec<Mirror> {
+pub fn mirror_results(config: &Config, region: Option<MirrorRegion>) -> Vec<Mirror> {
     let mut mirrors: Vec<Mirror> = config
         .mirrors
         .iter()
@@ -72,17 +72,10 @@ pub fn mirror_results(config: &Config) -> Vec<Mirror> {
         .cloned()
         .collect();
     if mirrors.is_empty() {
-        mirrors = crate::config::default_mirrors()
-            .into_iter()
-            .map(|(name, kind, url, test_url)| Mirror {
-                name,
-                kind,
-                url: url.to_owned(),
-                test_url: test_url.to_owned(),
-                priority: 0,
-                enabled: true,
-            })
-            .collect();
+        mirrors = crate::config::default_mirrors();
+    }
+    if let Some(region) = region {
+        mirrors.retain(|mirror| mirror.region == region);
     }
     mirrors.sort_by(|left, right| {
         right

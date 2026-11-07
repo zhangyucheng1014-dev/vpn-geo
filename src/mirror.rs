@@ -10,8 +10,13 @@ use crate::config::{Mirror, MirrorKind};
 const MARKER_START: &str = "# BEGIN vpn-geo managed mirrors";
 const MARKER_END: &str = "# END vpn-geo managed mirrors";
 
-pub async fn list(config_path: &Path, config: &crate::config::Config, json: bool) -> u8 {
-    let mirrors = crate::benchmark::mirror_results(config);
+pub async fn list(
+    config_path: &Path,
+    config: &crate::config::Config,
+    region: Option<crate::config::MirrorRegion>,
+    json: bool,
+) -> u8 {
+    let mirrors = crate::benchmark::mirror_results(config, region);
     if json {
         println!(
             "{}",
@@ -21,27 +26,40 @@ pub async fn list(config_path: &Path, config: &crate::config::Config, json: bool
     }
     println!("Configuration: {}", config_path.display());
     println!(
-        "{:<20} {:<10} {:>8} {:<6} URL",
-        "NAME", "KIND", "PRIORITY", "STATE"
+        "{:<20} {:<10} {:<8} {:>8} {:<6} URL",
+        "NAME", "KIND", "REGION", "PRIORITY", "STATE"
     );
     for mirror in &mirrors {
         println!(
-            "{:<20} {:<10} {:>8} {:<6} {}",
+            "{:<20} {:<10} {:<8} {:>8} {:<6} {}",
             mirror.name,
             kind_label(mirror.kind),
+            mirror.region.as_str(),
             mirror.priority,
             if mirror.enabled { "on" } else { "off" },
             mirror.url
         );
     }
     if config.mirrors.is_empty() {
-        println!("\nUsing built-in source catalog. Add [[mirrors]] to customize it.");
+        println!(
+            "\nUsing built-in source catalog ({} sources). Add [[mirrors]] to customize it.",
+            mirrors.len()
+        );
     }
     0
 }
 
-pub async fn speed(config: &crate::config::Config, direct: bool, json: bool) -> u8 {
-    let mirrors = crate::benchmark::mirror_results(config);
+pub async fn speed(
+    config: &crate::config::Config,
+    region: Option<crate::config::MirrorRegion>,
+    direct: bool,
+    json: bool,
+) -> u8 {
+    let mirrors = crate::benchmark::mirror_results(config, region);
+    if mirrors.is_empty() {
+        eprintln!("no mirrors match the selected region");
+        return 2;
+    }
     let targets = mirrors
         .iter()
         .map(|mirror| (mirror.name.clone(), mirror.test_url.clone(), None))
@@ -191,6 +209,7 @@ mod tests {
             &render_managed_block(&Mirror {
                 name: "fast".into(),
                 kind: MirrorKind::Pacman,
+                region: crate::config::MirrorRegion::Cn,
                 url: "https://example.test/$repo/os/$arch".into(),
                 test_url: "https://example.test/file".into(),
                 priority: 10,

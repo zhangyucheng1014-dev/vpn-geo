@@ -47,10 +47,48 @@ pub enum MirrorKind {
     Generic,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum MirrorRegion {
+    #[serde(alias = "cn", alias = "china")]
+    Cn,
+    #[serde(alias = "hk", alias = "hongkong")]
+    Hk,
+    #[serde(alias = "jp", alias = "japan")]
+    Jp,
+    #[serde(alias = "us", alias = "usa")]
+    Us,
+    #[serde(alias = "global")]
+    Global,
+}
+
+impl MirrorRegion {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cn => "CN",
+            Self::Hk => "HK",
+            Self::Jp => "JP",
+            Self::Us => "US",
+            Self::Global => "GLOBAL",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cn" | "china" | "中" | "中国" | "大陆" => Some(Self::Cn),
+            "hk" | "hongkong" | "hong-kong" | "港" | "香港" => Some(Self::Hk),
+            "jp" | "japan" | "日" | "日本" => Some(Self::Jp),
+            "us" | "usa" | "美" | "美国" => Some(Self::Us),
+            "global" | "all" => Some(Self::Global),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Mirror {
     pub name: String,
     pub kind: MirrorKind,
+    pub region: MirrorRegion,
     pub url: String,
     pub test_url: String,
     pub priority: i32,
@@ -106,6 +144,7 @@ struct RawNode {
 struct RawMirror {
     name: Option<String>,
     kind: Option<String>,
+    region: Option<String>,
     url: Option<String>,
     test_url: Option<String>,
     #[serde(default)]
@@ -252,9 +291,16 @@ impl Config {
                     ))
                 }
             };
+            let region = match mirror.region.as_deref() {
+                Some(value) => MirrorRegion::parse(value).ok_or_else(|| {
+                    format!("mirrors[{index}].region must be cn/hk/jp/us/global, got {value:?}")
+                })?,
+                None => MirrorRegion::Global,
+            };
             mirrors.push(Mirror {
                 name,
                 kind,
+                region,
                 url,
                 test_url,
                 priority: mirror.priority,
@@ -293,39 +339,169 @@ pub fn default_geoip_urls() -> &'static [&'static str] {
     ]
 }
 
-pub fn default_mirrors() -> Vec<(String, MirrorKind, &'static str, &'static str)> {
-    vec![
+pub fn default_mirrors() -> Vec<Mirror> {
+    let catalog = [
         (
-            "tsinghua".to_owned(),
-            MirrorKind::Pacman,
-            "https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch",
-            "https://mirrors.tuna.tsinghua.edu.cn/archlinux/core/os/x86_64/core.db.tar.gz",
+            "cn-tsinghua",
+            MirrorRegion::Cn,
+            "https://mirrors.tuna.tsinghua.edu.cn/archlinux/",
         ),
         (
-            "ustc".to_owned(),
-            MirrorKind::Pacman,
-            "https://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch",
-            "https://mirrors.ustc.edu.cn/archlinux/core/os/x86_64/core.db.tar.gz",
+            "cn-ustc",
+            MirrorRegion::Cn,
+            "https://mirrors.ustc.edu.cn/archlinux/",
         ),
         (
-            "aliyun".to_owned(),
-            MirrorKind::Pacman,
-            "https://mirrors.aliyun.com/archlinux/$repo/os/$arch",
-            "https://mirrors.aliyun.com/archlinux/core/os/x86_64/core.db.tar.gz",
+            "cn-aliyun",
+            MirrorRegion::Cn,
+            "https://mirrors.aliyun.com/archlinux/",
         ),
         (
-            "rsproxy".to_owned(),
-            MirrorKind::Pacman,
-            "https://mirrors.rsproxy.cn/archlinux/$repo/os/$arch",
-            "https://mirrors.rsproxy.cn/archlinux/core/os/x86_64/core.db.tar.gz",
+            "cn-jlu",
+            MirrorRegion::Cn,
+            "https://mirrors.jlu.edu.cn/archlinux/",
         ),
         (
-            "cloudflare".to_owned(),
-            MirrorKind::Generic,
-            "https://cloudflaremirrors.com/archlinux/$repo/os/$arch",
-            "https://cloudflaremirrors.com/archlinux/core/os/x86_64/core.db.tar.gz",
+            "cn-nju",
+            MirrorRegion::Cn,
+            "https://mirrors.nju.edu.cn/archlinux/",
         ),
-    ]
+        (
+            "cn-xjtu",
+            MirrorRegion::Cn,
+            "https://mirrors.xjtu.edu.cn/archlinux/",
+        ),
+        (
+            "cn-hust",
+            MirrorRegion::Cn,
+            "https://mirrors.hust.edu.cn/archlinux/",
+        ),
+        (
+            "cn-nyist",
+            MirrorRegion::Cn,
+            "https://mirror.nyist.edu.cn/archlinux/",
+        ),
+        (
+            "hk-cicku",
+            MirrorRegion::Hk,
+            "https://hk.mirrors.cicku.me/archlinux/",
+        ),
+        (
+            "hk-rackspace",
+            MirrorRegion::Hk,
+            "https://hkg.mirror.rackspace.com/archlinux/",
+        ),
+        (
+            "hk-koddos",
+            MirrorRegion::Hk,
+            "https://mirror-hk.koddos.net/archlinux/",
+        ),
+        (
+            "jp-miraa",
+            MirrorRegion::Jp,
+            "https://www.miraa.jp/archlinux/",
+        ),
+        (
+            "jp-aria",
+            MirrorRegion::Jp,
+            "https://mirror.aria-on-the-planet.es/archlinux/",
+        ),
+        (
+            "jp-yamagata",
+            MirrorRegion::Jp,
+            "https://ftp.yz.yamagata-u.ac.jp/pub/linux/archlinux/",
+        ),
+        (
+            "jp-jaist",
+            MirrorRegion::Jp,
+            "https://ftp.jaist.ac.jp/pub/Linux/ArchLinux/",
+        ),
+        (
+            "jp-cicku",
+            MirrorRegion::Jp,
+            "https://jp.mirrors.cicku.me/archlinux/",
+        ),
+        (
+            "jp-rain",
+            MirrorRegion::Jp,
+            "https://mirror.rain.ne.jp/archlinux/",
+        ),
+        (
+            "jp-hashy",
+            MirrorRegion::Jp,
+            "https://mirror.hashy0917.net/archlinux/",
+        ),
+        (
+            "us-mtu",
+            MirrorRegion::Us,
+            "https://mirrors.lug.mtu.edu/archlinux/",
+        ),
+        (
+            "us-rit",
+            MirrorRegion::Us,
+            "https://mirrors.rit.edu/archlinux/",
+        ),
+        (
+            "us-umd",
+            MirrorRegion::Us,
+            "https://mirror.umd.edu/archlinux/",
+        ),
+        (
+            "us-osuosl",
+            MirrorRegion::Us,
+            "https://ftp.osuosl.org/pub/archlinux/",
+        ),
+        (
+            "us-pkgbuild-la",
+            MirrorRegion::Us,
+            "https://losangeles.mirror.pkgbuild.com/",
+        ),
+        (
+            "us-cicku",
+            MirrorRegion::Us,
+            "https://us.mirrors.cicku.me/archlinux/",
+        ),
+        (
+            "us-constant",
+            MirrorRegion::Us,
+            "https://arch.mirror.constant.com/",
+        ),
+        (
+            "us-tzulo",
+            MirrorRegion::Us,
+            "https://mirror.tzulo.com/archlinux/",
+        ),
+        (
+            "us-misaka-iad",
+            MirrorRegion::Us,
+            "https://iad.mirrors.misaka.one/archlinux/",
+        ),
+        (
+            "us-berkeley",
+            MirrorRegion::Us,
+            "https://mirrors.ocf.berkeley.edu/archlinux/",
+        ),
+        (
+            "global-cloudflare",
+            MirrorRegion::Global,
+            "https://cloudflaremirrors.com/archlinux/",
+        ),
+    ];
+    catalog
+        .into_iter()
+        .map(|(name, region, base)| {
+            let base = base.trim_end_matches('/');
+            Mirror {
+                name: name.to_owned(),
+                kind: MirrorKind::Pacman,
+                region,
+                url: format!("{base}/$repo/os/$arch"),
+                test_url: format!("{base}/core/os/x86_64/core.db.tar.gz"),
+                priority: 0,
+                enabled: true,
+            }
+        })
+        .collect()
 }
 
 pub fn parse_duration(field: &str, value: &str) -> Result<Duration, String> {
@@ -393,6 +569,30 @@ country = "jp"
         let duplicate =
             format!("{BASE}\n[[nodes]]\nname = \"jp2\"\nuuid = \"uuid-jp\"\ncountry = \"JP\"\n");
         assert!(Config::from_raw(toml::from_str(&duplicate).unwrap()).is_err());
+    }
+
+    #[test]
+    fn default_catalog_covers_four_regions() {
+        let catalog = default_mirrors();
+        for region in [
+            MirrorRegion::Cn,
+            MirrorRegion::Hk,
+            MirrorRegion::Jp,
+            MirrorRegion::Us,
+        ] {
+            assert!(
+                catalog
+                    .iter()
+                    .filter(|mirror| mirror.region == region)
+                    .count()
+                    >= 3,
+                "region {} needs at least three sources",
+                region.as_str()
+            );
+        }
+        assert!(catalog
+            .iter()
+            .all(|mirror| mirror.test_url.ends_with("/core/os/x86_64/core.db.tar.gz")));
     }
 
     #[test]

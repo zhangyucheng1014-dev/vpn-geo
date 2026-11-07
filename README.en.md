@@ -19,7 +19,9 @@ vpn-geo speed                   # benchmark nearest configured nodes
 vpn-geo speed apply             # benchmark and promote the fastest node
 vpn-geo route compare           # benchmark current route and no-proxy baseline
 vpn-geo mirror list             # list built-in and configured mirrors
+vpn-geo mirror list -r cn       # filter by cn/hk/jp/us/global
 vpn-geo mirror speed            # benchmark mirrors (read-only)
+vpn-geo mirror speed -r jp      # benchmark one region only
 sudo vpn-geo mirror apply tsinghua --yes
 ```
 
@@ -28,7 +30,7 @@ The daemon never connects, disconnects, or switches a VPN. It does not read or m
 ## New capabilities
 
 - GeoIP: three default sources are queried concurrently with a majority vote; up to eight custom `urls` are supported, and the legacy single `url` key still works.
-- Mirrors: five built-in Arch Linux sources plus custom `[[mirrors]]` entries. `mirror apply` changes only a marked vpn-geo block, creates a timestamped backup, and requires `--yes` and root. Generic sources are benchmark-only.
+- Mirrors: 29 built-in Arch Linux HTTPS sources grouped into CN (8), HK (3), JP (7), US (10), and Global (1), selected from the official Arch mirror status and checked for database-file access. Use `mirror list -r REGION` or `mirror speed -r REGION`, or add custom `[[mirrors]]`. `mirror apply` changes only a marked vpn-geo block, creates a timestamped backup, and requires `--yes` and root. Generic sources are benchmark-only.
 - Route: `status` reports active VPN profiles, proxy environment/GNOME proxy, devices, active links, and a confidence-tagged route classification. `route compare` measures both current and no-proxy paths without toggling VPN itself.
 - Performance: one small Rust binary, single-thread Tokio runtime, debounced D-Bus signals, bounded concurrency, response/download limits, rustls, and a 96 MiB systemd memory cap.
 

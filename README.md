@@ -34,7 +34,9 @@ vpn-geo speed --direct          # GeoIP 查询绕过 HTTP 代理设置
 vpn-geo route                   # 测当前线路延迟/吞吐，并显示线路状态
 vpn-geo route compare           # 额外测一个 no-proxy 直连基准
 vpn-geo mirror list             # 列出内置/自定义的 pacman 与通用源
+vpn-geo mirror list -r cn       # 只看中国大陆源；另有 hk/jp/us/global
 vpn-geo mirror speed            # 镜像源测速（只读）
+vpn-geo mirror speed -r jp      # 只测日本源
 vpn-geo mirror speed --direct   # 绕过系统代理测镜像源
 sudo vpn-geo mirror apply tsinghua --yes   # 应用 pacman 源（需要 root）
 vpn-geo -c /path/to/config.toml check
@@ -49,12 +51,13 @@ vpn-geo -v status               # 调试日志
 
 默认并发查询 `ipwho.is`、`ipapi.co`、`ip-api.com` 三个兼容 JSON 格式的服务，采用多数票共识；单个源失败不会中断处理。可在 `[geoip]` 中用 `urls = [...]` 自定义最多 8 个源，也可以使用旧版 `url = "..."`。查询响应限制为 1 MiB，禁止保留空闲连接，超时和异常响应不会修改任何节点或状态。
 
-`mirror` 内置清华、中科大、阿里云、RsProxy、Cloudflare 五个 Arch Linux 源，并支持配置任意数量的 `[[mirrors]]`：
+`mirror` 内置 29 个按地区整理的 Arch Linux HTTPS 源：中国大陆 8 个、香港 3 个、日本 7 个、美国 10 个、全球 1 个。候选来自 Arch Linux 官方镜像状态，优先选择 active、近期同步、完整度高的源，并验证 `core.db.tar.gz` 可访问；会过滤掉当前环境下不可测速的 RsProxy、返回 403 的 Xtom 和下载不稳定的 Wtako。可用 `mirror list -r cn|hk|jp|us|global` 或 `mirror speed -r jp` 按地区筛选。也支持配置任意数量的 `[[mirrors]]`：
 
 ```toml
 [[mirrors]]
 name = "my-mirror"
 kind = "pacman"            # 或 generic
+region = "cn"              # cn/hk/jp/us/global；省略则为 global
 url = "https://example.test/archlinux/$repo/os/$arch"
 test_url = "https://example.test/archlinux/core/os/x86_64/core.db.tar.gz"
 priority = 100

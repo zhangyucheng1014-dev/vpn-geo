@@ -11,7 +11,7 @@ mod state;
 
 use std::{path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
 
-use config::{Config, MirrorKind};
+use config::{Config, MirrorKind, MirrorRegion};
 use log::{debug, error, info, warn};
 
 #[derive(Debug)]
@@ -49,9 +49,18 @@ struct RouteCommand {
 
 #[derive(Debug)]
 enum MirrorCommand {
-    List { json: bool },
-    Speed { direct: bool, json: bool },
-    Apply { name: String },
+    List {
+        region: Option<MirrorRegion>,
+        json: bool,
+    },
+    Speed {
+        region: Option<MirrorRegion>,
+        direct: bool,
+        json: bool,
+    },
+    Apply {
+        name: String,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -108,8 +117,14 @@ async fn dispatch(global: Global, config: Arc<Config>) -> u8 {
         Command::Speed(command) => run_speed(&config, command).await,
         Command::Route(command) => run_route(&config, command).await,
         Command::Mirror(command) => match command {
-            MirrorCommand::List { json } => mirror::list(&global.config, &config, json).await,
-            MirrorCommand::Speed { direct, json } => mirror::speed(&config, direct, json).await,
+            MirrorCommand::List { region, json } => {
+                mirror::list(&global.config, &config, region, json).await
+            }
+            MirrorCommand::Speed {
+                region,
+                direct,
+                json,
+            } => mirror::speed(&config, region, direct, json).await,
             MirrorCommand::Apply { name } => run_mirror_apply(&config, &name),
         },
         Command::Help => 0,
@@ -228,20 +243,18 @@ fn parse_mirror(args: Vec<String>) -> Result<MirrorCommand, String> {
     let subcommand = args.next().unwrap_or_else(|| "list".to_owned());
     let rest: Vec<String> = args.collect();
     match subcommand.as_str() {
-        "list" | "ls" => Ok(MirrorCommand::List {
-            json: parse_json_flag(rest)?,
-        }),
+        "list" | "ls" => {
+            let (region, json) = parse_mirror_options(rest, false)?;
+            Ok(MirrorCommand::List { region, json })
+        }
         "speed" => {
-            let mut direct = false;
-            let mut json = false;
-            for arg in rest {
-                match arg.as_str() {
-                    "--direct" => direct = true,
-                    "--json" => json = true,
-                    other => return Err(format!("unexpected mirror speed argument {other:?}")),
-                }
-            }
-            Ok(MirrorCommand::Speed { direct, json })
+            let (region, json) = parse_mirror_options(rest.clone(), true)?;
+            let direct = rest.iter().any(|arg| arg == "--direct");
+            Ok(MirrorCommand::Speed {
+                region,
+                direct,
+                json,
+            })
         }
         "apply" => {
             let mut name = None;
@@ -267,6 +280,39 @@ fn parse_mirror(args: Vec<String>) -> Result<MirrorCommand, String> {
         }
         other => Err(format!("unknown mirror subcommand {other:?}")),
     }
+}
+
+fn parse_mirror_options(
+    args: Vec<String>,
+    allow_direct: bool,
+) -> Result<(Option<MirrorRegion>, bool), String> {
+    let mut region = None;
+    let mut json = false;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if let Some(value) = arg.strip_prefix("--region=") {
+            region = Some(parse_region(value)?);
+        } else if arg == "--region" || arg == "-r" {
+            index += 1;
+            let value = args.get(index).ok_or("--region needs a value")?;
+            region = Some(parse_region(value)?);
+        } else if arg == "--json" {
+            json = true;
+        } else if allow_direct && arg == "--direct" {
+        } else if arg == "-h" || arg == "--help" {
+            print_usage();
+        } else {
+            return Err(format!("unexpected mirror argument {arg:?}"));
+        }
+        index += 1;
+    }
+    Ok((region, json))
+}
+
+fn parse_region(value: &str) -> Result<MirrorRegion, String> {
+    MirrorRegion::parse(value)
+        .ok_or_else(|| format!("unknown region {value:?}; use cn, hk, jp, us, or global"))
 }
 
 async fn run_daemon(config: Arc<Config>) -> u8 {
@@ -523,7 +569,7 @@ async fn run_route(config: &Config, command: RouteCommand) -> u8 {
 }
 
 fn run_mirror_apply(config: &Config, name: &str) -> u8 {
-    let Some(mirror) = crate::benchmark::mirror_results(config)
+    let Some(mirror) = crate::benchmark::mirror_results(config, None)
         .into_iter()
         .find(|mirror| mirror.name == name)
     else {
@@ -589,10 +635,12 @@ fn print_usage() {
     println!("  speed [apply]         benchmark nearest configured nodes");
     println!("  route [compare]       benchmark current route and direct baseline");
     println!("  mirror list           list pacman/generic source catalog");
-    println!("  mirror speed          benchmark configured mirrors");
+    println!("  mirror list -r cn     filter sources by cn/hk/jp/us/global");
+    println!("  mirror speed -r jp    benchmark one region");
     println!("  mirror apply NAME -y  apply a pacman source (root required)");
     println!("\nGlobal options:");
     println!("  -c, --config PATH     TOML configuration path");
     println!("  -v, --verbose         enable debug logs");
+    println!("  --region, -r REGION   mirror region: cn, hk, jp, us, global");
     println!("  -h, --help            show this help");
 }

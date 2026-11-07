@@ -36,10 +36,12 @@ longitude = 126.9780
 test_url = "https://replace-with-your-test-host.example/test-10MiB.bin"
 
 # Optional. Without [[mirrors]], `mirror` uses the built-in source catalog.
+# Built-in sources cover CN/HK/JP/US/Global and can be filtered with `-r`.
 # `kind` is either "pacman" or "generic"; only pacman sources can be applied.
 [[mirrors]]
 name = "tsinghua"
 kind = "pacman"
+region = "cn"
 url = "https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch"
 test_url = "https://mirrors.tuna.tsinghua.edu.cn/archlinux/core/os/x86_64/core.db.tar.gz"
 priority = 100
@@ -48,6 +50,7 @@ enabled = true
 [[mirrors]]
 name = "ustc"
 kind = "pacman"
+region = "cn"
 url = "https://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch"
 test_url = "https://mirrors.ustc.edu.cn/archlinux/core/os/x86_64/core.db.tar.gz"
 priority = 90
@@ -56,6 +59,7 @@ enabled = true
 [[mirrors]]
 name = "aliyun"
 kind = "pacman"
+region = "cn"
 url = "https://mirrors.aliyun.com/archlinux/$repo/os/$arch"
 test_url = "https://mirrors.aliyun.com/archlinux/core/os/x86_64/core.db.tar.gz"
 priority = 80
